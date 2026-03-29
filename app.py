@@ -37,8 +37,7 @@ def validar():
 
     # Anti-sharing
     if lic.device_id is None:
-        lic.device_id = device_id
-        db.session.commit()
+        return jsonify({"status": "not_activated"})
     elif lic.device_id != device_id:
         return jsonify({"status": "device_mismatch"})
 
@@ -51,8 +50,16 @@ def validar():
 @app.route("/crear", methods=["POST"])
 def crear():
     data = request.json
-    dias = data.get("dias", 30)
-    plan = data.get("plan", "basic")
+    plan = data.get("plan", "mensual")
+
+    if plan == "mensual":
+        dias = 30
+    elif plan == "anual":
+        dias = 365
+    elif plan == "lifetime":
+        dias = 9999
+    else:
+        dias = 30
 
     serial = generar_serial()
 
@@ -65,7 +72,10 @@ def crear():
     db.session.add(nueva)
     db.session.commit()
 
-    return jsonify({"serial": serial})
+    return jsonify({
+        "serial": serial,
+        "plan": plan
+    })
 
 # ==============================
 # BLOQUEAR
