@@ -1,0 +1,11 @@
+from database import db
+from datetime import datetime
+
+class Licencia(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    serial = db.Column(db.String(100), unique=True, nullable=False)
+    estado = db.Column(db.String(20), default="activa")
+    expira = db.Column(db.DateTime)
+    device_id = db.Column(db.String(200))
+    plan = db.Column(db.String(50))
+    creada = db.Column(db.DateTime, default=datetime.utcnow)
