@@ -78,6 +78,29 @@ def crear():
     })
 
 # ==============================
+# ACTIVAR
+# ==============================
+
+@app.route("/activar", methods=["POST"])
+def activar():
+    data = request.json
+    serial = data.get("serial")
+    device_id = data.get("device_id")
+
+    lic = Licencia.query.filter_by(serial=serial).first()
+
+    if not lic:
+        return jsonify({"status": "not_found"})
+
+    if lic.estado != "activa":
+        return jsonify({"status": "blocked"})
+
+    lic.device_id = device_id
+    db.session.commit()
+
+    return jsonify({"status": "activated"})
+
+# ==============================
 # BLOQUEAR
 # ==============================
 
