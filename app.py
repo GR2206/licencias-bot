@@ -36,7 +36,7 @@ def validar():
         return jsonify({"status": "expired"})
 
     # Anti-sharing
-    if lic.device_id == "PENDIENTE":
+    if lic.device_id in [None, "PENDIENTE"]:
         lic.device_id = device_id
         db.session.commit()
     elif lic.device_id != device_id:
