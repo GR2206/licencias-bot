@@ -4,9 +4,11 @@ from models import Licencia
 from utils import generar_serial, fecha_expiracion
 from datetime import datetime
 import os
+from flask_cors import CORS
 
 
 app = Flask(__name__)
+CORS(app)
 app.config["SQLALCHEMY_DATABASE_URI"] = "postgresql://admin:NOQNvdbWILYydg5GCGeeQfPm7Tt1gHVJ@dpg-d74prrshg0os73a7ktgg-a.virginia-postgres.render.com/licencias_o0wh"
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
