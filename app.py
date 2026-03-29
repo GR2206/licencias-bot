@@ -6,7 +6,7 @@ from datetime import datetime
 
 
 app = Flask(__name__)
-app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///licencias.db"
+app.config["SQLALCHEMY_DATABASE_URI"] = "postgresql://admin:NOQNvdbWILYydg5GCGeeQfPm7Tt1gHVJ@dpg-d74prrshg0os73a7ktgg-a.virginia-postgres.render.com/licencias_o0wh"
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
 db.init_app(app)
