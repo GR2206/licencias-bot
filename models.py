@@ -9,3 +9,5 @@ class Licencia(db.Model):
     device_id = db.Column(db.String(200))
     plan = db.Column(db.String(50))
     creada = db.Column(db.DateTime, default=datetime.utcnow)
+    nombre = db.Column(db.String(50))
+    apellido = db.Column(db.String(50))
