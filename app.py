@@ -53,6 +53,8 @@ def validar():
 def crear():
     data = request.json
     plan = data.get("plan", "mensual")
+    nombre = data.get("nombre")
+    apellido = data.get("apellido")
 
     if plan == "mensual":
         dias = 30
@@ -68,7 +70,9 @@ def crear():
     nueva = Licencia(
         serial=serial,
         expira=fecha_expiracion(dias),
-        plan=plan
+        plan=plan,
+        nombre=nombre,
+        apellido=apellido
     )
 
     db.session.add(nueva)
@@ -78,6 +82,28 @@ def crear():
         "serial": serial,
         "plan": plan
     })
+
+# ==============================
+# LICENCIAS
+# ==============================
+
+@app.route("/licencias", methods=["GET"])
+def listar():
+    licencias = Licencia.query.all()
+
+    data = []
+
+    for l in licencias:
+        data.append({
+            "nombre": l.nombre,
+            "apellido": l.apellido,
+            "serial": l.serial,
+            "plan": l.plan,
+            "estado": l.estado,
+            "expira": l.expira.strftime("%Y-%m-%d")
+        })
+
+    return jsonify(data)
 
 # ==============================
 # ACTIVAR
