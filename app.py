@@ -36,8 +36,9 @@ def validar():
         return jsonify({"status": "expired"})
 
     # Anti-sharing
-    if lic.device_id is None:
-        return jsonify({"status": "not_activated"})
+    if lic.device_id == "PENDIENTE":
+        lic.device_id = device_id
+        db.session.commit()
     elif lic.device_id != device_id:
         return jsonify({"status": "device_mismatch"})
 
@@ -85,17 +86,13 @@ def crear():
 def activar():
     data = request.json
     serial = data.get("serial")
-    device_id = data.get("device_id")
 
     lic = Licencia.query.filter_by(serial=serial).first()
 
     if not lic:
         return jsonify({"status": "not_found"})
 
-    if lic.estado != "activa":
-        return jsonify({"status": "blocked"})
-
-    lic.device_id = device_id
+    lic.device_id = "PENDIENTE"
     db.session.commit()
 
     return jsonify({"status": "activated"})
