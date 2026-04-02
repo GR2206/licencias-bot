@@ -145,6 +145,25 @@ def bloquear():
     return jsonify({"status": "not_found"})
 
 # ==============================
+# RENOVAR
+# ==============================
+
+@app.route("/renovar", methods=["POST"])
+def renovar():
+    data = request.json
+    serial = data.get("serial")
+
+    lic = Licencia.query.filter_by(serial=serial).first()
+
+    if not lic:
+        return jsonify({"status": "not_found"})
+
+    lic.expira = fecha_expiracion(30)
+    db.session.commit()
+
+    return jsonify({"status": "ok"})
+
+# ==============================
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
