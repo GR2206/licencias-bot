@@ -9,7 +9,12 @@ from flask_cors import CORS
 
 app = Flask(__name__)
 CORS(app)
-app.config["SQLALCHEMY_DATABASE_URI"] = "postgresql://admin:NOQNvdbWILYydg5GCGeeQfPm7Tt1gHVJ@dpg-d74prrshg0os73a7ktgg-a.virginia-postgres.render.com/licencias_o0wh"
+db_url = os.getenv("DATABASE_URL")
+
+if db_url.startswith("postgres://"):
+    db_url = db_url.replace("postgres://", "postgresql+psycopg2://")
+
+app.config["SQLALCHEMY_DATABASE_URI"] = db_url
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
 db.init_app(app)
@@ -204,4 +209,4 @@ def estadisticas():
 # ==============================
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
