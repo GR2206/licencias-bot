@@ -17,6 +17,8 @@ if db_url.startswith("postgres://"):
 app.config["SQLALCHEMY_DATABASE_URI"] = db_url
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
+cambios_device = db.Column(db.Integer, default=0)
+
 db.init_app(app)
 
 with app.app_context():
@@ -43,14 +45,24 @@ def validar():
     if lic.expira < datetime.utcnow():
         return jsonify({"status": "expired"})
 
-    # 🔒 NO ACTIVAR ACÁ
+   # Si nunca activó
     if lic.device_id is None:
         return jsonify({"status": "not_activated"})
 
-    if lic.device_id != device_id:
-        return jsonify({"status": "device_mismatch"})
+    # Si coincide → OK
+    if lic.device_id == device_id:
+        return jsonify({"status": "ok"})
 
-    return jsonify({"status": "ok"})
+    # 🔥 SI NO COINCIDE → PERMITIR 1 CAMBIO
+    if lic.cambios_device < 1:
+        lic.device_id = device_id
+        lic.cambios_device += 1
+        db.session.commit()
+
+        return jsonify({"status": "relinked"})
+
+    # 🔒 SI YA CAMBIÓ → BLOQUEAR
+    return jsonify({"status": "device_mismatch"})
 
 # ==============================
 # CREAR LICENCIA
@@ -196,6 +208,23 @@ def renovar():
     db.session.commit()
 
     return jsonify({"status": "ok"})
+
+# ==============================
+# RESET
+# ==============================
+
+@app.route("/reset_device", methods=["POST"])
+def reset_device():
+    serial = request.json.get("serial")
+
+    lic = Licencia.query.filter_by(serial=serial).first()
+
+    if lic:
+        lic.device_id = None
+        lic.cambios_device = 0
+        db.session.commit()
+
+    return jsonify({"status": "reset"})
 
 # ==============================
 # ESTADISTICAS
