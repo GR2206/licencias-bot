@@ -107,22 +107,27 @@ def crear():
 
 @app.route("/licencias", methods=["GET"])
 def obtener_licencias():
+    try:
+        licencias = Licencia.query.all()
 
-    licencias = Licencia.query.all()
+        resultado = []
 
-    resultado = []
+        for l in licencias:
+            resultado.append({
+                "nombre": getattr(l, "nombre", ""),
+                "apellido": getattr(l, "apellido", ""),
+                "serial": l.serial,
+                "plan": l.plan,
+                "estado": l.estado,
+                "expira": str(l.expira)
+            })
 
-    for l in licencias:
-        resultado.append({
-            "nombre": l.nombre,
-            "apellido": l.apellido,
-            "serial": l.serial,
-            "plan": l.plan,
-            "estado": l.estado,
-            "expira": l.expira.strftime("%Y-%m-%d") if l.expira else "Sin fecha"
+        return jsonify(resultado)
+
+    except Exception as e:
+        return jsonify({
+            "error": str(e)
         })
-
-    return jsonify(resultado)
 
 # ==============================
 # ACTIVAR
