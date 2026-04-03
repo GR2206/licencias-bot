@@ -85,7 +85,7 @@ def crear():
         plan=plan,
         nombre=nombre,
         apellido=apellido,
-        device_id="AUTO-" + str(user_id) if user_id else "PENDIENTE",
+        device_id=None,
         ingreso=ingreso,
         estado="activa"
     )
