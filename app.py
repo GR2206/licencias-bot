@@ -116,7 +116,8 @@ def obtener_licencias():
                 "serial": l.serial,
                 "plan": l.plan,
                 "estado": l.estado,
-                "expira": str(l.expira)
+                "expira": str(l.expira),
+                "device_id": l.device_id
             })
 
         return jsonify(resultado)
