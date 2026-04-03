@@ -54,9 +54,10 @@ def validar():
 @app.route("/crear", methods=["POST"])
 def crear():
     data = request.json
+    nombre = data.get("nombre", "SinNombre")
+    apellido = data.get("apellido", "SinApellido")
     plan = data.get("plan", "mensual")
-    nombre = data.get("nombre")
-    apellido = data.get("apellido")
+    user_id = data.get("user_id", "manual")
     precios = {
         "BASIC": 30,
         "PRO": 75,
@@ -88,7 +89,8 @@ def crear():
         nombre=nombre,
         apellido=apellido,
         device_id = "AUTO-" + str(user_id) if user_id else "PENDIENTE",
-        ingreso=precios.get(plan, 0)
+        ingreso=precios.get(plan, 0),
+        estado="activa"
     )
 
     db.session.add(nueva)
