@@ -139,15 +139,25 @@ def activar():
     lic = Licencia.query.filter_by(serial=serial).first()
 
     if not lic:
-        return jsonify({"status": "not_found"})
+        return jsonify({"status": "invalid"})
 
-    if lic.device_id is not None:
-        return jsonify({"status": "already_used"})
+    if lic.estado != "activa":
+        return jsonify({"status": "blocked"})
 
-    lic.device_id = device_id
-    db.session.commit()
+    if lic.expira < datetime.utcnow():
+        return jsonify({"status": "expired"})
 
-    return jsonify({"status": "activated"})
+    # 🔥 SI NO TIENE DEVICE → LO ASIGNAMOS
+    if lic.device_id in [None, "PENDIENTE"]:
+        lic.device_id = device_id
+        db.session.commit()
+        return jsonify({"status": "activated"})
+
+    # 🔒 SI YA TIENE Y ES DISTINTO → BLOQUEADO
+    if lic.device_id != device_id:
+        return jsonify({"status": "device_mismatch"})
+
+    return jsonify({"status": "ok"})
 
 # ==============================
 # BLOQUEAR
