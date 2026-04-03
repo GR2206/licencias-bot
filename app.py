@@ -57,15 +57,27 @@ def crear():
     plan = data.get("plan", "mensual")
     nombre = data.get("nombre")
     apellido = data.get("apellido")
+    precios = {
+        "BASIC": 30,
+        "PRO": 75,
+        "VIP": 300,
+        "LIFETIME": 1300
+    }
+
+    ingreso = precios.get(plan, 0)
 
     if plan == "mensual":
         dias = 30
+    elif plan == "trimestral":
+        dias = 90   
     elif plan == "anual":
         dias = 365
     elif plan == "lifetime":
         dias = 9999
     else:
         dias = 30
+
+    user_id = data.get("user_id")
 
     serial = generar_serial()
 
@@ -74,7 +86,9 @@ def crear():
         expira=fecha_expiracion(dias),
         plan=plan,
         nombre=nombre,
-        apellido=apellido
+        apellido=apellido,
+        device_id = "AUTO-" + str(user_id) if user_id else "PENDIENTE",
+        ingreso=precios.get(plan, 0)
     )
 
     db.session.add(nueva)
@@ -162,6 +176,22 @@ def renovar():
     db.session.commit()
 
     return jsonify({"status": "ok"})
+
+# ==============================
+# ESTADISTICAS
+# ==============================
+
+@app.route("/estadisticas")
+def estadisticas():
+    licencias = Licencia.query.all()
+
+    total = sum(l.ingreso or 0 for l in licencias)
+    cantidad = len(licencias)
+
+    return jsonify({
+        "total": total,
+        "ventas": cantidad
+    })
 
 # ==============================
 

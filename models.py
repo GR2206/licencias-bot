@@ -11,3 +11,4 @@ class Licencia(db.Model):
     creada = db.Column(db.DateTime, default=datetime.utcnow)
     nombre = db.Column(db.String(50))
     apellido = db.Column(db.String(50))
+    ingreso = db.Column(db.Float)
