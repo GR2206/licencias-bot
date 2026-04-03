@@ -43,11 +43,11 @@ def validar():
     if lic.expira < datetime.utcnow():
         return jsonify({"status": "expired"})
 
-    # Anti-sharing
-    if lic.device_id in [None, "PENDIENTE"]:
-        lic.device_id = device_id
-        db.session.commit()
-    elif lic.device_id != device_id:
+    # 🔒 NO ACTIVAR ACÁ
+    if lic.device_id is None:
+        return jsonify({"status": "not_activated"})
+
+    if lic.device_id != device_id:
         return jsonify({"status": "device_mismatch"})
 
     return jsonify({"status": "ok"})
@@ -59,31 +59,23 @@ def validar():
 @app.route("/crear", methods=["POST"])
 def crear():
     data = request.json
+
     nombre = data.get("nombre", "SinNombre")
     apellido = data.get("apellido", "SinApellido")
-    plan = data.get("plan", "mensual")
-    user_id = data.get("user_id", "manual")
-    precios = {
-        "BASIC": 30,
-        "PRO": 75,
-        "VIP": 300,
-        "LIFETIME": 1300
+    plan = data.get("plan", "BASIC")
+    user_id = data.get("user_id")
+
+    planes = {
+        "BASIC": {"dias": 30, "precio": 30},
+        "PRO": {"dias": 90, "precio": 75},
+        "VIP": {"dias": 365, "precio": 300},
+        "LIFETIME": {"dias": 9999, "precio": 1300}
     }
 
-    ingreso = precios.get(plan, 0)
+    plan_data = planes.get(plan, planes["BASIC"])
 
-    if plan == "mensual":
-        dias = 30
-    elif plan == "trimestral":
-        dias = 90   
-    elif plan == "anual":
-        dias = 365
-    elif plan == "lifetime":
-        dias = 9999
-    else:
-        dias = 30
-
-    user_id = data.get("user_id")
+    dias = plan_data["dias"]
+    ingreso = plan_data["precio"]
 
     serial = generar_serial()
 
@@ -93,8 +85,8 @@ def crear():
         plan=plan,
         nombre=nombre,
         apellido=apellido,
-        device_id = "AUTO-" + str(user_id) if user_id else "PENDIENTE",
-        ingreso=precios.get(plan, 0),
+        device_id="AUTO-" + str(user_id) if user_id else "PENDIENTE",
+        ingreso=ingreso,
         estado="activa"
     )
 
@@ -142,13 +134,17 @@ def obtener_licencias():
 def activar():
     data = request.json
     serial = data.get("serial")
+    device_id = data.get("device_id")
 
     lic = Licencia.query.filter_by(serial=serial).first()
 
     if not lic:
         return jsonify({"status": "not_found"})
 
-    lic.device_id = "PENDIENTE"
+    if lic.device_id is not None:
+        return jsonify({"status": "already_used"})
+
+    lic.device_id = device_id
     db.session.commit()
 
     return jsonify({"status": "activated"})
