@@ -106,22 +106,23 @@ def crear():
 # ==============================
 
 @app.route("/licencias", methods=["GET"])
-def listar():
+def obtener_licencias():
+
     licencias = Licencia.query.all()
 
-    data = []
+    resultado = []
 
     for l in licencias:
-        data.append({
+        resultado.append({
             "nombre": l.nombre,
             "apellido": l.apellido,
             "serial": l.serial,
             "plan": l.plan,
             "estado": l.estado,
-            "expira": l.expira.strftime("%Y-%m-%d")
+            "expira": l.expira.strftime("%Y-%m-%d") if l.expira else "Sin fecha"
         })
 
-    return jsonify(data)
+    return jsonify(resultado)
 
 # ==============================
 # ACTIVAR
