@@ -44,22 +44,23 @@ def validar():
     if lic.expira < datetime.utcnow():
         return jsonify({"status": "expired"})
 
-    # 🔥 Primera activación
+    # 🔥 ACTIVACIÓN AUTOMÁTICA
     if lic.device_id is None:
-        return jsonify({"status": "not_activated"})
+        lic.device_id = device_id
+        db.session.commit()
+        return jsonify({"status": "activated"})
 
-    # ✅ Mismo dispositivo
+    # ✅ MISMO DISPOSITIVO
     if lic.device_id == device_id:
         return jsonify({"status": "ok"})
 
-    # 🔄 Permitir 1 cambio automático
+    # 🔄 PERMITIR 1 CAMBIO
     if lic.cambios_device < 1:
         lic.device_id = device_id
         lic.cambios_device += 1
         db.session.commit()
         return jsonify({"status": "relinked"})
 
-    # 🔒 Bloqueado
     return jsonify({"status": "device_mismatch"})
 
 # ==============================
