@@ -110,6 +110,45 @@ def crear():
     })
 
 # ==============================
+# TRIAL - FREE 7 DIAS
+# ==============================
+
+@app.route("/trial", methods=["POST"])
+def trial():
+
+    data = request.json
+    user_id = data.get("user_id")
+    device_id = data.get("device_id")
+
+    # 🔍 buscar si ya usó trial
+    existente = Licencia.query.filter_by(user_id=user_id).first()
+
+    if existente:
+        return jsonify({"status": "ya_usado"})
+
+    serial = generar_serial()
+
+    nueva = Licencia(
+        serial=serial,
+        expira=fecha_expiracion(7),
+        plan="TRIAL",
+        nombre="Trial",
+        apellido=str(user_id),
+        device_id=device_id,
+        estado="activa",
+        ingreso=0,
+        trial_usado=True
+    )
+
+    db.session.add(nueva)
+    db.session.commit()
+
+    return jsonify({
+        "status": "ok",
+        "serial": serial
+    })
+
+# ==============================
 # LICENCIAS
 # ==============================
 
