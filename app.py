@@ -52,7 +52,10 @@ def validar():
 
     # ✅ MISMO DISPOSITIVO
     if lic.device_id == device_id:
-        return jsonify({"status": "ok"})
+        return jsonify({
+            "status": "ok",
+            "plan": lic.plan
+        })
 
     # 🔄 PERMITIR 1 CAMBIO
     if lic.cambios_device < 1:
