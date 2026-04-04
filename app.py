@@ -31,12 +31,7 @@ with app.app_context():
 
 @app.route("/validar", methods=["POST"])
 def validar():
-    data = request.json
-    serial = data.get("serial")
-    device_id = data.get("device_id")
-
-    lic = Licencia.query.filter_by(serial=serial).first()
-
+    
     try:
         r = requests.post("https://licencias-bot.onrender.com/validar", json={
             "serial": "TU_SERIAL",
