@@ -34,7 +34,7 @@ def validar():
     
     try:
         r = requests.post("https://licencias-bot.onrender.com/validar", json={
-            "serial": "TU_SERIAL",
+            "serial": "7E6E6C7888F74F40",
             "device_id": "PC-GINO"
         })
 
