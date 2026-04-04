@@ -5,6 +5,7 @@ from utils import generar_serial, fecha_expiracion
 from datetime import datetime
 import os
 from flask_cors import CORS
+import requests
 
 
 app = Flask(__name__)
@@ -36,33 +37,20 @@ def validar():
 
     lic = Licencia.query.filter_by(serial=serial).first()
 
-    if not lic:
-        return jsonify({"status": "invalid"})
+    try:
+        r = requests.post("https://licencias-bot.onrender.com/validar", json={
+            "serial": "TU_SERIAL",
+            "device_id": "PC-GINO"
+        })
 
-    if lic.estado != "activa":
-        return jsonify({"status": "blocked"})
+        print("STATUS:", r.status_code)
+        print("RESPUESTA RAW:", r.text)
 
-    if lic.expira < datetime.utcnow():
-        return jsonify({"status": "expired"})
+        data = r.json()
+        print("JSON:", data)
 
-   # Si nunca activó
-    if lic.device_id is None:
-        return jsonify({"status": "not_activated"})
-
-    # Si coincide → OK
-    if lic.device_id == device_id:
-        return jsonify({"status": "ok"})
-
-    # 🔥 SI NO COINCIDE → PERMITIR 1 CAMBIO
-    if lic.cambios_device < 1:
-        lic.device_id = device_id
-        lic.cambios_device += 1
-        db.session.commit()
-
-        return jsonify({"status": "relinked"})
-
-    # 🔒 SI YA CAMBIÓ → BLOQUEAR
-    return jsonify({"status": "device_mismatch"})
+    except Exception as e:
+        print("❌ ERROR COMPLETO:", e)
 
 # ==============================
 # CREAR LICENCIA
