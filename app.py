@@ -18,11 +18,10 @@ if db_url.startswith("postgres://"):
 app.config["SQLALCHEMY_DATABASE_URI"] = db_url
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
-cambios_device = db.Column(db.Integer, default=0)
-
 db.init_app(app)
 
 with app.app_context():
+    db.drop_all()
     db.create_all()
 
 # ==============================
@@ -31,21 +30,38 @@ with app.app_context():
 
 @app.route("/validar", methods=["POST"])
 def validar():
-    
-    try:
-        r = requests.post("https://licencias-bot.onrender.com/validar", json={
-            "serial": "7E6E6C7888F74F40",
-            "device_id": "PC-GINO"
-        })
+    data = request.json
+    serial = data.get("serial")
+    device_id = data.get("device_id")
 
-        print("STATUS:", r.status_code)
-        print("RESPUESTA RAW:", r.text)
+    lic = Licencia.query.filter_by(serial=serial).first()
 
-        data = r.json()
-        print("JSON:", data)
+    if not lic:
+        return jsonify({"status": "invalid"})
 
-    except Exception as e:
-        print("❌ ERROR COMPLETO:", e)
+    if lic.estado != "activa":
+        return jsonify({"status": "blocked"})
+
+    if lic.expira < datetime.utcnow():
+        return jsonify({"status": "expired"})
+
+    # 🔥 Primera activación
+    if lic.device_id is None:
+        return jsonify({"status": "not_activated"})
+
+    # ✅ Mismo dispositivo
+    if lic.device_id == device_id:
+        return jsonify({"status": "ok"})
+
+    # 🔄 Permitir 1 cambio automático
+    if lic.cambios_device < 1:
+        lic.device_id = device_id
+        lic.cambios_device += 1
+        db.session.commit()
+        return jsonify({"status": "relinked"})
+
+    # 🔒 Bloqueado
+    return jsonify({"status": "device_mismatch"})
 
 # ==============================
 # CREAR LICENCIA
@@ -191,23 +207,6 @@ def renovar():
     db.session.commit()
 
     return jsonify({"status": "ok"})
-
-# ==============================
-# RESET
-# ==============================
-
-@app.route("/reset_device", methods=["POST"])
-def reset_device():
-    serial = request.json.get("serial")
-
-    lic = Licencia.query.filter_by(serial=serial).first()
-
-    if lic:
-        lic.device_id = None
-        lic.cambios_device = 0
-        db.session.commit()
-
-    return jsonify({"status": "reset"})
 
 # ==============================
 # ESTADISTICAS

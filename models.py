@@ -12,3 +12,4 @@ class Licencia(db.Model):
     nombre = db.Column(db.String(50))
     apellido = db.Column(db.String(50))
     ingreso = db.Column(db.Float)
+    cambios_device = db.Column(db.Integer, default=0)
