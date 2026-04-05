@@ -251,6 +251,23 @@ def renovar():
     return jsonify({"status": "ok"})
 
 # ==============================
+# ELIMINAR
+# ==============================
+
+@app.route("/eliminar", methods=["POST"])
+def eliminar():
+    serial = request.json.get("serial")
+
+    lic = Licencia.query.filter_by(serial=serial).first()
+
+    if lic:
+        db.session.delete(lic)
+        db.session.commit()
+        return jsonify({"status": "ok"})
+
+    return jsonify({"status": "not_found"})
+
+# ==============================
 # ESTADISTICAS
 # ==============================
 
