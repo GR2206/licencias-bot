@@ -44,27 +44,27 @@ def validar():
     if lic.expira < datetime.utcnow():
         return jsonify({"status": "expired"})
 
-    # 🔥 ACTIVACIÓN AUTOMÁTICA
+    # ACTIVACIÓN AUTOMÁTICA
     if lic.device_id is None:
         lic.device_id = device_id
         db.session.commit()
-        return jsonify({"status": "activated"})
 
-    # ✅ MISMO DISPOSITIVO
-    if lic.device_id == device_id:
-        return jsonify({
-            "status": "ok",
-            "plan": lic.plan
-        })
+    # MISMO DISPOSITIVO
+    elif lic.device_id != device_id:
 
-    # 🔄 PERMITIR 1 CAMBIO
-    if lic.cambios_device < 1:
-        lic.device_id = device_id
-        lic.cambios_device += 1
-        db.session.commit()
-        return jsonify({"status": "relinked"})
+        if lic.cambios_device < 1:
+            lic.device_id = device_id
+            lic.cambios_device += 1
+            db.session.commit()
+        else:
+            return jsonify({"status": "device_mismatch"})
 
-    return jsonify({"status": "device_mismatch"})
+    # ✅ SIEMPRE DEVOLVER PLAN
+    return jsonify({
+        "status": "ok",
+        "plan": lic.plan
+    })
+
 
 # ==============================
 # CREAR LICENCIA
