@@ -80,13 +80,14 @@ def crear():
     user_id = data.get("user_id")
 
     planes = {
-        "BASIC": {"dias": 30, "precio": 30},
-        "PRO": {"dias": 90, "precio": 75},
-        "VIP": {"dias": 365, "precio": 300},
-        "LIFETIME": {"dias": 9999, "precio": 1300}
+        "trial": {"dias": 7, "precio": 0},
+        "mensual": {"dias": 30, "precio": 30},
+        "trimestral": {"dias": 90, "precio": 75},
+        "anual": {"dias": 365, "precio": 300},
+        "lifetime": {"dias": 3650, "precio": 1300}
     }
 
-    plan_data = planes.get(plan, planes["BASIC"])
+    plan_data = planes.get(plan, planes["mensual"])
 
     dias = plan_data["dias"]
     ingreso = plan_data["precio"]
