@@ -85,6 +85,9 @@ def validar():
 
 @app.route("/crear", methods=["POST"])
 def crear():
+    print("STATUS:", request.status_code)
+    print("RESPUESTA:", request.text)
+    
     data = request.json
 
     nombre = data.get("nombre", "SinNombre")
