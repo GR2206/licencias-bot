@@ -6,6 +6,19 @@ from datetime import datetime
 import os
 from flask_cors import CORS
 import requests
+import boto3
+from botocore.config import Config
+
+s3 = boto3.client(
+    "s3",
+    aws_access_key_id="AKIAYZ2FRSQ3LTCWLOOA",
+    aws_secret_access_key="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",
+    region_name="us-east-1",  # tu región
+    config=Config(signature_version="s3v4")
+)
+
+BUCKET_NAME = "sniperpro-downloads"
+FILE_NAME = "SniperPro.zip"
 
 
 app = Flask(__name__)
@@ -283,6 +296,37 @@ def estadisticas():
         "total": total,
         "ventas": cantidad
     })
+
+# ==============================
+# LINK DESCARGA
+# ==============================
+
+@app.route("/generar_descarga", methods=["POST"])
+def generar_descarga():
+
+    serial = request.json.get("serial")
+
+    lic = Licencia.query.filter_by(serial=serial).first()
+
+    # ❌ NO EXISTE
+    if not lic:
+        return jsonify({"error": "Licencia inválida"}), 403
+
+    # ❌ NO PAGÓ / NO APROBADO
+    if lic.estado != "activa":
+        return jsonify({"error": "Pago no aprobado"}), 403
+
+    # ✅ TODO OK → GENERAR LINK
+    url = s3.generate_presigned_url(
+        "get_object",
+        Params={
+            "Bucket": BUCKET_NAME,
+            "Key": FILE_NAME
+        },
+        ExpiresIn=300
+    )
+
+    return jsonify({"url": url})
 
 # ==============================
 
