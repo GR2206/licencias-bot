@@ -11,9 +11,9 @@ from botocore.config import Config
 
 s3 = boto3.client(
     "s3",
-    aws_access_key_id="AKIAYZ2FRSQ3LTCWLOOA",
-    aws_secret_access_key="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",
-    region_name="us-east-1",  # tu región
+    aws_access_key_id=os.getenv("AWS_ACCESS_KEY"),
+    aws_secret_access_key=os.getenv("AWS_SECRET_KEY"),
+    region_name="us-east-1",
     config=Config(signature_version="s3v4")
 )
 
