@@ -18,7 +18,7 @@ s3 = boto3.client(
 )
 
 BUCKET_NAME = "sniperpro-download"
-FILE_NAME = "SniperPro.zip"
+FILE_NAME = "SniperV3.0.rar"
 
 
 app = Flask(__name__)
