@@ -85,47 +85,55 @@ def validar():
 
 @app.route("/crear", methods=["POST"])
 def crear():
-    print("DATA RECIBIDA:", request.json)
-    
-    data = request.json
-    nombre = data.get("nombre", "SinNombre")
-    apellido = data.get("apellido", "SinApellido")
-    plan = data.get("plan", "mensual").lower()
-    user_id = data.get("user_id")
+    try:
+        data = request.json
+        print("DATA RECIBIDA:", data)
 
-    planes = {
-        "trial": {"dias": 7, "precio": 0},
-        "basic": {"dias": 30, "precio": 30},
-        "pro": {"dias": 90, "precio": 75},
-        "vip": {"dias": 365, "precio": 300},
-        "lifetime": {"dias": 3650, "precio": 1300}
-    }
+        nombre = data.get("nombre", "SinNombre")
+        apellido = data.get("apellido", "SinApellido")
+        plan = data.get("plan", "mensual").lower()
 
-    plan_data = planes.get(plan, planes["mensual"])
+        planes = {
+            "trial": {"dias": 7, "precio": 0},
+            "basic": {"dias": 30, "precio": 30},
+            "pro": {"dias": 90, "precio": 75},
+            "vip": {"dias": 365, "precio": 300},
+            "lifetime": {"dias": 3650, "precio": 1300}
+        }
 
-    dias = plan_data["dias"]
-    ingreso = plan_data["precio"]
+        plan_data = planes.get(plan)
 
-    serial = generar_serial()
+        if not plan_data:
+            return jsonify({"error": f"Plan inválido: {plan}"}), 400
 
-    nueva = Licencia(
-        serial=serial,
-        expira=fecha_expiracion(dias),
-        plan=plan,
-        nombre=nombre,
-        apellido=apellido,
-        device_id=None,
-        ingreso=ingreso,
-        estado="activa"
-    )
+        dias = plan_data["dias"]
+        ingreso = plan_data["precio"]
 
-    db.session.add(nueva)
-    db.session.commit()
+        serial = generar_serial()
 
-    return jsonify({
-        "serial": serial,
-        "plan": plan
-    })
+        nueva = Licencia(
+            serial=serial,
+            expira=fecha_expiracion(dias),
+            plan=plan,
+            nombre=nombre,
+            apellido=apellido,
+            device_id=None,
+            ingreso=ingreso,
+            estado="activa"
+        )
+
+        db.session.add(nueva)
+        db.session.commit()
+
+        return jsonify({
+            "serial": serial,
+            "plan": plan
+        })
+
+    except Exception as e:
+        print("❌ ERROR CREAR:", str(e))
+        return jsonify({"error": str(e)}), 500
+
 
 # ==============================
 # TRIAL - FREE 7 DIAS
