@@ -17,7 +17,7 @@ s3 = boto3.client(
     config=Config(signature_version="s3v4")
 )
 
-BUCKET_NAME = "sniperpro-downloads"
+BUCKET_NAME = "sniperpro-download"
 FILE_NAME = "SniperPro.zip"
 
 
