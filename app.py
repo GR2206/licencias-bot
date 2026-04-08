@@ -85,21 +85,19 @@ def validar():
 
 @app.route("/crear", methods=["POST"])
 def crear():
-    print("STATUS:", request.status_code)
-    print("RESPUESTA:", request.text)
+    print("DATA RECIBIDA:", request.json)
     
     data = request.json
-
     nombre = data.get("nombre", "SinNombre")
     apellido = data.get("apellido", "SinApellido")
-    plan = data.get("plan", "BASIC")
+    plan = data.get("plan", "mensual").lower()
     user_id = data.get("user_id")
 
     planes = {
         "trial": {"dias": 7, "precio": 0},
-        "mensual": {"dias": 30, "precio": 30},
-        "trimestral": {"dias": 90, "precio": 75},
-        "anual": {"dias": 365, "precio": 300},
+        "basic": {"dias": 30, "precio": 30},
+        "pro": {"dias": 90, "precio": 75},
+        "vip": {"dias": 365, "precio": 300},
         "lifetime": {"dias": 3650, "precio": 1300}
     }
 
@@ -137,11 +135,10 @@ def crear():
 def trial():
 
     data = request.json
-    user_id = data.get("user_id")
     device_id = data.get("device_id")
 
-    # 🔍 buscar si ya usó trial
-    existente = Licencia.query.filter_by(user_id=user_id).first()
+    # 🔍 verificar si ya usó trial en este device
+    existente = Licencia.query.filter_by(device_id=device_id, plan="trial").first()
 
     if existente:
         return jsonify({"status": "ya_usado"})
@@ -151,13 +148,12 @@ def trial():
     nueva = Licencia(
         serial=serial,
         expira=fecha_expiracion(7),
-        plan="TRIAL",
+        plan="trial",  # 🔥 minúscula (importante)
         nombre="Trial",
-        apellido=str(user_id),
+        apellido="Trial",
         device_id=device_id,
         estado="activa",
-        ingreso=0,
-        trial_usado=True
+        ingreso=0
     )
 
     db.session.add(nueva)
@@ -306,30 +302,31 @@ def estadisticas():
 
 @app.route("/generar_descarga", methods=["POST"])
 def generar_descarga():
+    try:
+        serial = request.json.get("serial")
 
-    serial = request.json.get("serial")
+        lic = Licencia.query.filter_by(serial=serial).first()
 
-    lic = Licencia.query.filter_by(serial=serial).first()
+        if not lic:
+            return jsonify({"error": "Licencia inválida"}), 403
 
-    # ❌ NO EXISTE
-    if not lic:
-        return jsonify({"error": "Licencia inválida"}), 403
+        if lic.estado != "activa":
+            return jsonify({"error": "Pago no aprobado"}), 403
 
-    # ❌ NO PAGÓ / NO APROBADO
-    if lic.estado != "activa":
-        return jsonify({"error": "Pago no aprobado"}), 403
+        url = s3.generate_presigned_url(
+            "get_object",
+            Params={
+                "Bucket": BUCKET_NAME,
+                "Key": FILE_NAME
+            },
+            ExpiresIn=300
+        )
 
-    # ✅ TODO OK → GENERAR LINK
-    url = s3.generate_presigned_url(
-        "get_object",
-        Params={
-            "Bucket": BUCKET_NAME,
-            "Key": FILE_NAME
-        },
-        ExpiresIn=300
-    )
+        return jsonify({"url": url})
 
-    return jsonify({"url": url})
+    except Exception as e:
+        print("ERROR S3:", str(e))
+        return jsonify({"error": str(e)}), 500
 
 # ==============================
 
