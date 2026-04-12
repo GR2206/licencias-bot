@@ -142,40 +142,52 @@ def crear():
 # ==============================
 # TRIAL - FREE 7 DIAS
 # ==============================
-
 @app.route("/trial", methods=["POST"])
 def trial():
+    try:
+        data = request.json
 
-    data = request.json
-    device_id = data.get("device_id")
+        user_id = data.get("user_id")
+        device_id = data.get("device_id")
+        mercado = data.get("mercado", "binance")  # 🔥 CLAVE
 
-    # 🔍 verificar si ya usó trial en este device
-    existente = Licencia.query.filter_by(device_id=device_id, plan="trial").first()
+        # 🔒 evitar múltiples trials
+        existente = Licencia.query.filter_by(
+            device_id=device_id,
+            mercado=mercado
+        ).first()
+        if existente:
+            return jsonify({"status": "ya_usado"})
 
-    if existente:
-        return jsonify({"status": "ya_usado"})
+        # 🔥 GENERAR SERIAL SEGÚN MERCADO
+        if mercado == "forex":
+            serial = f"SNIPER-FOREX-{uuid.uuid4().hex[:6].upper()}"
+        else:
+            serial = f"SNIPER-BINANCE-{uuid.uuid4().hex[:6].upper()}"
 
-    serial = generar_serial()
+        nueva = Licencia(
+            serial=serial,
+            nombre="Trial",
+            apellido="Trial",
+            plan="trial",
+            estado="activa",
+            device_id=device_id,
+            expira=fecha_expiracion(7),
+            ingreso=0,
+            mercado=mercado  # 🔥 GUARDAR ESTO
+        )
 
-    nueva = Licencia(
-        serial=serial,
-        expira=fecha_expiracion(7),
-        plan="trial",  # 🔥 minúscula (importante)
-        nombre="Trial",
-        apellido="Trial",
-        device_id=device_id,
-        estado="activa",
-        ingreso=0
-    )
+        db.session.add(nueva)
+        db.session.commit()
 
-    db.session.add(nueva)
-    db.session.commit()
+        return jsonify({
+            "status": "ok",
+            "serial": serial
+        })
 
-    return jsonify({
-        "status": "ok",
-        "serial": serial
-    })
-
+    except Exception as e:
+        print("❌ ERROR TRIAL:", str(e))
+        return jsonify({"error": str(e)}), 500
 # ==============================
 # LICENCIAS
 # ==============================
