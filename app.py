@@ -8,6 +8,8 @@ from flask_cors import CORS
 import requests
 import boto3
 from botocore.config import Config
+import uuid
+
 
 s3 = boto3.client(
     "s3",
@@ -111,7 +113,10 @@ def crear():
         dias = plan_data["dias"]
         ingreso = plan_data["precio"]
 
-        serial = generar_serial()
+        if mercado == "forex":
+            serial = f"SNIPER-FOREX-{uuid.uuid4().hex[:6].upper()}"
+        else:
+            serial = f"SNIPER-BINANCE-{uuid.uuid4().hex[:6].upper()}"
 
         nueva = Licencia(
             serial=serial,
@@ -119,7 +124,7 @@ def crear():
             plan=plan,
             nombre=nombre,
             apellido=apellido,
-            mercado= data.get("mercado", "binance"),
+            mercado=mercado,
             device_id=None,
             ingreso=ingreso,
             estado="activa"
