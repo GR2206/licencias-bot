@@ -340,7 +340,7 @@ def generar_link_s3(file_name):
             'Bucket': BUCKET_NAME,
             'Key': file_name
         },
-        ExpiresIn=300  # 🔥 5 MINUTOS
+        ExpiresIn=180  # 🔥 3 MINUTOS
     )
 
     return url
