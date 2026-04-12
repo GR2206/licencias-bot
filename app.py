@@ -19,6 +19,9 @@ s3 = boto3.client(
 
 BUCKET_NAME = "sniperpro-download"
 FILE_NAME = "SniperV3.0.rar"
+FILE_NAME = "forexbot.rar"
+
+
 
 
 app = Flask(__name__)
@@ -92,6 +95,7 @@ def crear():
         nombre = data.get("nombre", "SinNombre")
         apellido = data.get("apellido", "SinApellido")
         plan = data.get("plan", "mensual").lower()
+        mercado = data.get("mercado", "binance")
 
         planes = {
             "trial": {"dias": 7, "precio": 0},
@@ -117,6 +121,7 @@ def crear():
             plan=plan,
             nombre=nombre,
             apellido=apellido,
+            mercado=mercado,
             device_id=None,
             ingreso=ingreso,
             estado="activa"

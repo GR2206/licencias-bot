@@ -15,3 +15,4 @@ class Licencia(db.Model):
     cambios_device = db.Column(db.Integer, default=0)
     trial_usado = db.Column(db.Boolean, default=False)
     user_id = db.Column(db.String)
+    mercado = db.Column(db.String(50))
