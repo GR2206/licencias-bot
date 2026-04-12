@@ -206,6 +206,7 @@ def obtener_licencias():
                 "serial": l.serial,
                 "plan": l.plan,
                 "estado": l.estado,
+                "mercado": l.mercado,
                 "expira": str(l.expira),
                 "device_id": l.device_id
             })
