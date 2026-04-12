@@ -119,6 +119,7 @@ def crear():
             plan=plan,
             nombre=nombre,
             apellido=apellido,
+            mercado= data.get("mercado", "binance"),
             device_id=None,
             ingreso=ingreso,
             estado="activa"
