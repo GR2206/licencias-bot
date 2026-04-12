@@ -22,8 +22,6 @@ FILE_NAME = "SniperV3.0.rar"
 FILE_NAME = "forexbot.rar"
 
 
-
-
 app = Flask(__name__)
 CORS(app)
 db_url = os.getenv("DATABASE_URL")
@@ -121,7 +119,6 @@ def crear():
             plan=plan,
             nombre=nombre,
             apellido=apellido,
-            mercado=mercado,
             device_id=None,
             ingreso=ingreso,
             estado="activa"
