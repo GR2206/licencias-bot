@@ -149,17 +149,17 @@ def trial():
 
         user_id = data.get("user_id")
         device_id = data.get("device_id")
-        mercado = data.get("mercado", "binance")  # 🔥 CLAVE
+        mercado = data.get("mercado", "binance")
 
-        # 🔒 evitar múltiples trials
+        # 🔥 BLOQUEO POR MERCADO (NO GLOBAL)
         existente = Licencia.query.filter_by(
             device_id=device_id,
             mercado=mercado
         ).first()
+
         if existente:
             return jsonify({"status": "ya_usado"})
 
-        # 🔥 GENERAR SERIAL SEGÚN MERCADO
         if mercado == "forex":
             serial = f"SNIPER-FOREX-{uuid.uuid4().hex[:6].upper()}"
         else:
@@ -174,7 +174,7 @@ def trial():
             device_id=device_id,
             expira=fecha_expiracion(7),
             ingreso=0,
-            mercado=mercado  # 🔥 GUARDAR ESTO
+            mercado=mercado
         )
 
         db.session.add(nueva)
