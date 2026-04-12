@@ -335,25 +335,29 @@ def generar_link_s3(file_name):
 # ==============================
 @app.route("/generar_descarga", methods=["POST"])
 def generar_descarga():
+    try:
+        data = request.json
+        serial = data.get("serial")
 
-    data = request.json
-    serial = data.get("serial")
+        licencia = Licencia.query.filter_by(serial=serial).first()
 
-    licencia = Licencia.query.filter_by(serial=serial).first()
+        if not licencia:
+            return jsonify({"error": "Licencia no encontrada"}), 404
 
-    if not licencia:
-        return jsonify({"error": "Licencia no encontrada"}), 404
+        mercado = licencia.mercado or "binance"
 
-    # 🔥 DECISIÓN POR MERCADO
-    if licencia.mercado == "forex":
-        file_name = "forexbot.rar"
-    else:
-        file_name = "SniperV3.0.rar"
+        if mercado == "forex":
+            file_name = "forexbot.rar"
+        else:
+            file_name = "SniperV3.0.rar"
 
-    url = s3.generate_presigned_url(file_name)
+        url = generar_link_s3(file_name)
 
-    return jsonify({"url": url})
+        return jsonify({"url": url})
 
+    except Exception as e:
+        print("❌ ERROR DESCARGA:", str(e))
+        return jsonify({"error": str(e)}), 500
 # ==============================
 
 if __name__ == "__main__":
