@@ -19,10 +19,6 @@ s3 = boto3.client(
     config=Config(signature_version="s3v4")
 )
 
-BUCKET_NAME = "sniperpro-download"
-FILE_NAME = "SniperV3.0.rar"
-FILE_NAME = "forexbot.rar"
-
 
 app = Flask(__name__)
 CORS(app)
@@ -315,34 +311,48 @@ def estadisticas():
 # ==============================
 # LINK DESCARGA
 # ==============================
+def generar_link_s3(file_name):
 
+    s3 = boto3.client(
+        's3',
+        aws_access_key_id=os.getenv("AWS_ACCESS_KEY"),
+        aws_secret_access_key=os.getenv("AWS_SECRET_KEY"),
+        region_name='us-east-1'
+    )
+
+    BUCKET_NAME = "sniperpro-download"
+
+    url = s3.generate_presigned_url(
+        'get_object',
+        Params={
+            'Bucket': BUCKET_NAME,
+            'Key': file_name
+        },
+        ExpiresIn=300  # 🔥 5 MINUTOS
+    )
+
+    return url
+# ==============================
 @app.route("/generar_descarga", methods=["POST"])
 def generar_descarga():
-    try:
-        serial = request.json.get("serial")
 
-        lic = Licencia.query.filter_by(serial=serial).first()
+    data = request.json
+    serial = data.get("serial")
 
-        if not lic:
-            return jsonify({"error": "Licencia inválida"}), 403
+    licencia = Licencia.query.filter_by(serial=serial).first()
 
-        if lic.estado != "activa":
-            return jsonify({"error": "Pago no aprobado"}), 403
+    if not licencia:
+        return jsonify({"error": "Licencia no encontrada"}), 404
 
-        url = s3.generate_presigned_url(
-            "get_object",
-            Params={
-                "Bucket": BUCKET_NAME,
-                "Key": FILE_NAME
-            },
-            ExpiresIn=300
-        )
+    # 🔥 DECISIÓN POR MERCADO
+    if licencia.mercado == "forex":
+        file_name = "forexbot.rar"
+    else:
+        file_name = "SniperV3.0.rar"
 
-        return jsonify({"url": url})
+    url = s3.generate_presigned_url(file_name)
 
-    except Exception as e:
-        print("ERROR S3:", str(e))
-        return jsonify({"error": str(e)}), 500
+    return jsonify({"url": url})
 
 # ==============================
 
