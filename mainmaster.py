@@ -1,6 +1,7 @@
 import time
 import threading
 import os
+import textwrap
 from datetime import datetime
 import pandas as pd
 import cerebro
@@ -19,6 +20,18 @@ from binance.enums import KLINE_INTERVAL_4HOUR
 
 
 COL_ACTIVO = 12
+LOG_MSG_WIDTH = 48
+
+REGIMEN_CORTO = {
+    "TENDENCIA_ALCISTA_FUERTE": "ALCISTA FUERTE",
+    "TENDENCIA_BAJISTA_FUERTE": "BAJISTA FUERTE",
+    "TENDENCIA_ALCISTA": "ALCISTA",
+    "TENDENCIA_BAJISTA": "BAJISTA",
+    "VOLATIL_EXPANSION": "VOLATIL",
+    "RANGO_COMPRIMIDO": "RANGO COMP.",
+    "RANGO": "RANGO",
+    "DESCONOCIDO": "DESCONOCIDO",
+}
 
 def log_activo(simbolo: str, mensaje: str, primera_linea: bool = False, tipo="info"):
 
@@ -29,12 +42,29 @@ def log_activo(simbolo: str, mensaje: str, primera_linea: bool = False, tipo="in
         "info": Fore.CYAN
     }.get(tipo, Fore.WHITE)
 
-    texto = color + mensaje + Style.RESET_ALL
+    lineas = textwrap.wrap(
+        str(mensaje),
+        width=LOG_MSG_WIDTH,
+        break_long_words=False,
+        replace_whitespace=False
+    ) or [""]
 
-    if primera_linea:
-        print(f"{simbolo:<{COL_ACTIVO}} | {texto}")
-    else:
-        print(f"{'':<{COL_ACTIVO}} | {texto}")
+    for i, linea in enumerate(lineas):
+        etiqueta = simbolo if primera_linea and i == 0 else ""
+        texto = color + linea + Style.RESET_ALL
+        print(f"{etiqueta:<{COL_ACTIVO}} | {texto}")
+
+
+def log_contexto_ia(simbolo: str, contexto: dict):
+    regimen = REGIMEN_CORTO.get(
+        contexto.get("regimen", "DESCONOCIDO"),
+        contexto.get("regimen", "DESCONOCIDO")
+    )
+    tendencia = contexto.get("tendencia_pct", 0)
+    confianza = contexto.get("confianza", 0)
+
+    log_activo(simbolo, f"🧠 Régimen: {regimen}")
+    log_activo(simbolo, f"📊 Tend: {tendencia:+.2f}% | Conf: {confianza:.2f}")
 
 bot = telebot.TeleBot(config.TELEGRAM_TOKEN)
 client = Client(config.BINANCE_API_KEY, config.BINANCE_API_SECRET, {"timeout": 30})
@@ -1154,9 +1184,7 @@ def loop_principal():
                 
                 # IA: analizar contexto de mercado con 200 velas
                 contexto_ia = sniper_ai.analizar_contexto_mercado(df_m15)
-                log_activo(simbolo, f"🧠 Régimen: {contexto_ia['regimen']} | "
-                           f"tend={contexto_ia['tendencia_pct']:+.2f}% | "
-                           f"confianza={contexto_ia['confianza']:.2f}")
+                log_contexto_ia(simbolo, contexto_ia)
 
                 resultado = cerebro.analizar(
                     simbolo,

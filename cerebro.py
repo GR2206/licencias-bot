@@ -2,14 +2,22 @@ import pandas as pd
 import pandas_ta as ta
 from velas import identificar_patrones
 import requests
+import textwrap
 COL_ACTIVO = 12
+LOG_MSG_WIDTH = 48
 
 def log_activo(simbolo: str, mensaje: str, primera_linea: bool = False):
 
-    if primera_linea:
-        print(f"{simbolo:<{COL_ACTIVO}} | {mensaje}")
-    else:
-        print(f"{'':<{COL_ACTIVO}} | {mensaje}")
+    lineas = textwrap.wrap(
+        str(mensaje),
+        width=LOG_MSG_WIDTH,
+        break_long_words=False,
+        replace_whitespace=False
+    ) or [""]
+
+    for i, linea in enumerate(lineas):
+        etiqueta = simbolo if primera_linea and i == 0 else ""
+        print(f"{etiqueta:<{COL_ACTIVO}} | {linea}")
 
 # =================================
 # CONFIGURACIÓN GENERAL
@@ -873,7 +881,6 @@ def modelo_continuacion(simbolo, df_h1, df_m15, contexto):
         if detectar_acumulacion(simbolo, df_m15):
             score += 0.20
             motivos.append("acumulación institucional")
-            log_activo(simbolo, "✅ Acumulación institucional")
     except:
         pass
 
@@ -888,7 +895,12 @@ def modelo_continuacion(simbolo, df_h1, df_m15, contexto):
             # patrones alcistas devueltos por velas.py
             patrones_alcistas = {
                 "MARTILLO_ALCISTA",
+                "MARTILLO_INVERTIDO_ALCISTA",
+                "PINBAR_ALCISTA",
                 "ENVOLVENTE_ALCISTA",
+                "PIERCING_LINE_ALCISTA",
+                "HARAMI_ALCISTA",
+                "TWEEZER_BOTTOM_ALCISTA",
                 "ESTRELLA_MAÑANA",
                 "TRES_SOLDADOS",
                 "MARUBOZU_ALCISTA",
@@ -896,8 +908,15 @@ def modelo_continuacion(simbolo, df_h1, df_m15, contexto):
 
             # patrones bajistas devueltos por velas.py
             patrones_bajistas = {
+                "PINBAR_BAJISTA",
+                "HOMBRE_COLGADO_BAJISTA",
+                "ESTRELLA_FUGAZ_BAJISTA",
                 "ENVOLVENTE_BAJISTA",
+                "DARK_CLOUD_COVER_BAJISTA",
+                "HARAMI_BAJISTA",
+                "TWEEZER_TOP_BAJISTA",
                 "ESTRELLA_ATARDECER",
+                "TRES_CUERVOS_NEGROS",
                 "MARUBOZU_BAJISTA",
             }
 
