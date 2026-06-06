@@ -1,0 +1,113 @@
+{
+  "patrones": {
+    "ef80c47f98e8": {
+      "wins": 1,
+      "losses": 0,
+      "pnl": 0.1077,
+      "bloqueado": false,
+      "features": {
+        "modelo": "MSS",
+        "accion": "SHORT",
+        "btc": "BAJISTA",
+        "micro": "BAJISTA_MICRO",
+        "rsi_zona": "BAJO",
+        "macd_dir": "NEG",
+        "sesion": "NY",
+        "contra": "False"
+      }
+    },
+    "4ee523e437d2": {
+      "wins": 1,
+      "losses": 0,
+      "pnl": 0.1236,
+      "bloqueado": false,
+      "features": {
+        "modelo": "LIQUIDITY_VOID",
+        "accion": "SHORT",
+        "btc": "BAJISTA",
+        "micro": "BAJISTA_MICRO",
+        "rsi_zona": "MEDIO",
+        "macd_dir": "POS",
+        "sesion": "EUROPA",
+        "contra": "False"
+      }
+    },
+    "9e5bea6a05cd": {
+      "wins": 1,
+      "losses": 0,
+      "pnl": 0.9816,
+      "bloqueado": false,
+      "features": {
+        "modelo": "MSS",
+        "accion": "SHORT",
+        "btc": "BAJISTA",
+        "micro": "BAJISTA_MICRO",
+        "rsi_zona": "BAJO",
+        "macd_dir": "NEG",
+        "sesion": "EUROPA",
+        "contra": "False"
+      }
+    }
+  },
+  "historial": [
+    {
+      "ts": "2026-06-04 09:43",
+      "hash": "ef80c47f98e8",
+      "features": {
+        "modelo": "MSS",
+        "accion": "SHORT",
+        "btc": "BAJISTA",
+        "micro": "BAJISTA_MICRO",
+        "rsi_zona": "BAJO",
+        "macd_dir": "NEG",
+        "sesion": "NY",
+        "contra": "False"
+      },
+      "win": true,
+      "pnl": 0.1077,
+      "wr_patron": 1.0
+    },
+    {
+      "ts": "2026-06-05 11:37",
+      "hash": "4ee523e437d2",
+      "features": {
+        "modelo": "LIQUIDITY_VOID",
+        "accion": "SHORT",
+        "btc": "BAJISTA",
+        "micro": "BAJISTA_MICRO",
+        "rsi_zona": "MEDIO",
+        "macd_dir": "POS",
+        "sesion": "EUROPA",
+        "contra": "False"
+      },
+      "win": true,
+      "pnl": 0.1236,
+      "wr_patron": 1.0
+    },
+    {
+      "ts": "2026-06-06 01:31",
+      "hash": "9e5bea6a05cd",
+      "features": {
+        "modelo": "MSS",
+        "accion": "SHORT",
+        "btc": "BAJISTA",
+        "micro": "BAJISTA_MICRO",
+        "rsi_zona": "BAJO",
+        "macd_dir": "NEG",
+        "sesion": "EUROPA",
+        "contra": "False"
+      },
+      "win": true,
+      "pnl": 0.9816,
+      "wr_patron": 1.0
+    }
+  ],
+  "racha_actual": [
+    "WIN",
+    "WIN",
+    "WIN"
+  ],
+  "total_wins": 3,
+  "total_losses": 0,
+  "ultima_act": "2026-06-06 01:31"
+}
