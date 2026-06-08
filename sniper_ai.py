@@ -17,6 +17,7 @@ import hashlib
 import numpy as np
 import pandas as pd
 from datetime import datetime
+from velas import identificar_patrones
 
 AI_FILE = "sniper_ai_state.json"
 
@@ -39,6 +40,7 @@ class SniperAI:
 
     def __init__(self):
         self.patrones       = {}    # {hash: {wins, losses, pnl, bloqueado, features}}
+        self.estadisticas_activos = {}  # {SIMBOLO|MODELO|ACCION: {wins, losses, pnl}}
         self.historial      = []    # Últimos 200 trades completos
         self.racha_actual   = []    # Últimos resultados para detectar racha negativa
         self.total_wins     = 0
@@ -57,6 +59,7 @@ class SniperAI:
             with open(AI_FILE) as f:
                 data = json.load(f)
             self.patrones     = data.get("patrones", {})
+            self.estadisticas_activos = data.get("estadisticas_activos", {})
             self.historial    = data.get("historial", [])[-200:]
             self.racha_actual = data.get("racha_actual", [])[-10:]
             self.total_wins   = data.get("total_wins", 0)
@@ -81,6 +84,7 @@ class SniperAI:
             with open(AI_FILE, "w") as f:
                 json.dump({
                     "patrones"     : self.patrones,
+                    "estadisticas_activos": self.estadisticas_activos,
                     "historial"    : self.historial[-200:],
                     "racha_actual" : self.racha_actual[-10:],
                     "total_wins"   : self.total_wins,
@@ -90,21 +94,60 @@ class SniperAI:
         except Exception as e:
             print(f"🧠 SniperAI error guardando: {e}")
 
+    def _clave_estadistica(self, features: dict) -> str:
+        return "|".join([
+            features.get("simbolo", "UNKNOWN"),
+            features.get("modelo", "UNKNOWN"),
+            features.get("accion", "UNKNOWN"),
+        ])
+
+    def _stats_resumen(self, stats: dict) -> tuple:
+        wins = stats.get("wins", 0)
+        losses = stats.get("losses", 0)
+        total = wins + losses
+        wr = wins / max(1, total)
+        return wins, losses, total, wr
+
+    def resumen_estadisticas_activos(self, limite: int = 8) -> str:
+        if not self.estadisticas_activos:
+            return "🧠 IA: sin estadísticas por activo todavía."
+
+        filas = sorted(
+            self.estadisticas_activos.items(),
+            key=lambda item: (item[1].get("wins", 0) + item[1].get("losses", 0), item[1].get("pnl", 0)),
+            reverse=True
+        )[:limite]
+
+        lineas = ["🧠 Estadísticas IA por activo/modelo:"]
+        for clave, stats in filas:
+            wins, losses, total, wr = self._stats_resumen(stats)
+            pnl = stats.get("pnl", 0.0)
+            lineas.append(
+                f"{clave.replace('|', ' + ')} = {wr*100:.0f}% WR "
+                f"({wins}W/{losses}L, pnl {pnl:+.2f}, n={total})"
+            )
+
+        return "\n".join(lineas)
+
     # ─────────────────────────────────────────────────────────────────────────
     #  FINGERPRINT — identidad única de las condiciones de un trade
     # ─────────────────────────────────────────────────────────────────────────
 
     def generar_fingerprint(self, simbolo: str, analisis: dict,
                              df_m15, estado_btc: str,
-                             micro: str) -> tuple:
+                             micro: str, contexto: dict = None) -> tuple:
         """
         Genera un fingerprint reproducible de las condiciones de mercado.
         Retorna (hash_str, features_dict).
         """
         try:
             rsi_val = float(df_m15["rsi"].iloc[-1]) if "rsi" in df_m15.columns else 50.0
-            if rsi_val < 40:
+            if rsi_val <= 30:
+                rsi_zona = "SOBREVENTA"
+            elif rsi_val < 40:
                 rsi_zona = "BAJO"
+            elif rsi_val >= 70:
+                rsi_zona = "SOBRECOMPRA"
             elif rsi_val > 60:
                 rsi_zona = "ALTO"
             else:
@@ -112,6 +155,68 @@ class SniperAI:
 
             macd_hist = float(df_m15["macd_hist"].iloc[-1]) if "macd_hist" in df_m15.columns else 0
             macd_dir  = "POS" if macd_hist > 0 else "NEG"
+
+            contexto = contexto or self.analizar_contexto_mercado(df_m15)
+            regimen = contexto.get("regimen", "DESCONOCIDO")
+
+            patrones = analisis.get("patrones_vela")
+            if patrones is None:
+                patrones = identificar_patrones(df_m15)
+            patrones = [str(p).upper() for p in patrones]
+            patrones_direccionales = [
+                p for p in patrones
+                if p not in ["DOJI_INDECISION", "INSIDE_BAR"]
+            ]
+            patron_vela = patrones_direccionales[0] if patrones_direccionales else "NINGUNO"
+
+            try:
+                vol_actual = float(df_m15["volume"].iloc[-1])
+                vol_media = float(df_m15["volume"].rolling(30).mean().iloc[-1])
+                vol_ratio = vol_actual / max(vol_media, 1e-12)
+            except Exception:
+                vol_ratio = 1.0
+
+            if vol_ratio < 0.70:
+                volumen_zona = "BAJO"
+            elif vol_ratio < 1.20:
+                volumen_zona = "NORMAL"
+            elif vol_ratio < 2.00:
+                volumen_zona = "ALTO"
+            else:
+                volumen_zona = "EXPLOSIVO"
+
+            try:
+                adx_val = float(analisis.get("adx_actual"))
+                if np.isnan(adx_val):
+                    raise ValueError
+            except Exception:
+                try:
+                    adx_val = float(df_m15["ADX"].iloc[-1]) if "ADX" in df_m15.columns else 0.0
+                except Exception:
+                    adx_val = 0.0
+
+            if adx_val < 18:
+                adx_zona = "DEBIL"
+            elif adx_val < 25:
+                adx_zona = "NORMAL"
+            elif adx_val < 35:
+                adx_zona = "FUERTE"
+            else:
+                adx_zona = "MUY_FUERTE"
+
+            try:
+                distancia_sl_pct = float(analisis.get("distancia_sl_pct"))
+            except Exception:
+                precio = float(analisis.get("precio", 0))
+                sl = float(analisis.get("sl_precio", 0))
+                distancia_sl_pct = abs(precio - sl) / precio * 100 if precio > 0 and sl > 0 else 0.0
+
+            if distancia_sl_pct <= 1.2:
+                distancia_sl_zona = "CORTO"
+            elif distancia_sl_pct <= 2.5:
+                distancia_sl_zona = "CONTROLADO"
+            else:
+                distancia_sl_zona = "AMPLIO"
 
             hora = datetime.now().hour
             if 0 <= hora < 8:
@@ -122,11 +227,21 @@ class SniperAI:
                 sesion = "NY"
 
             features = {
+                "simbolo"    : simbolo,
                 "modelo"     : analisis.get("modelo", "UNKNOWN"),
                 "accion"     : analisis.get("accion", ""),
+                "regimen"    : regimen,
+                "patron_vela": patron_vela,
+                "patrones_vela": patrones,
                 "btc"        : estado_btc,
                 "micro"      : micro,
                 "rsi_zona"   : rsi_zona,
+                "volumen"    : volumen_zona,
+                "vol_ratio"  : round(vol_ratio, 2),
+                "adx_zona"   : adx_zona,
+                "adx"        : round(adx_val, 2),
+                "distancia_sl": distancia_sl_zona,
+                "distancia_sl_pct": round(distancia_sl_pct, 3),
                 "macd_dir"   : macd_dir,
                 "sesion"     : sesion,
                 "contra"     : str(analisis.get("modo_contra", False)),
@@ -252,6 +367,17 @@ class SniperAI:
                 wr   = w / max(1, w + l) * 100
                 return False, 0.0, f"PATRON_BLOQUEADO(WR={wr:.0f}%,{w}W/{l}L)"
 
+        clave_stats = self._clave_estadistica(features)
+        stats_activo = self.estadisticas_activos.get(clave_stats)
+        if stats_activo:
+            w, l, total, wr_activo = self._stats_resumen(stats_activo)
+            if total >= MIN_TRADES_PARA_APRENDER and wr_activo < UMBRAL_BLOQUEO_WR:
+                return (
+                    False,
+                    0.0,
+                    f"ACTIVO_MODELO_BLOQUEADO({clave_stats},WR={wr_activo*100:.0f}%,{w}W/{l}L)"
+                )
+
         # ── 3. Filtro de régimen vs dirección ───────────────────────────
         if regimen == "TENDENCIA_ALCISTA_FUERTE" and accion == "SHORT":
             if not analisis.get("modo_contra"):
@@ -269,6 +395,14 @@ class SniperAI:
 
         # ── 4. Calcular modificador de score ────────────────────────────
         score_mod = 1.0
+
+        if stats_activo:
+            w, l, total, wr_activo = self._stats_resumen(stats_activo)
+            if total >= MIN_TRADES_PARA_APRENDER:
+                if wr_activo >= UMBRAL_BOOST_WR:
+                    score_mod *= BOOST_MULTIPLICADOR
+                elif wr_activo < UMBRAL_BLOQUEO_WR + 0.1:
+                    score_mod *= PENALIZACION_MULTIPLICADOR
 
         if hash_fp in self.patrones:
             p  = self.patrones[hash_fp]
@@ -329,6 +463,39 @@ class SniperAI:
         total_patron = p["wins"] + p["losses"]
         wr_patron    = p["wins"] / max(1, total_patron)
 
+        # ── Estadística por activo + modelo + dirección ──────────────────
+        clave_stats = self._clave_estadistica(features)
+        if clave_stats not in self.estadisticas_activos:
+            self.estadisticas_activos[clave_stats] = {
+                "wins": 0,
+                "losses": 0,
+                "pnl": 0.0,
+                "features_base": {
+                    "simbolo": features.get("simbolo"),
+                    "modelo": features.get("modelo"),
+                    "accion": features.get("accion"),
+                },
+                "patrones_vela": {},
+                "regimenes": {},
+            }
+
+        stats_activo = self.estadisticas_activos[clave_stats]
+        if win:
+            stats_activo["wins"] += 1
+        else:
+            stats_activo["losses"] += 1
+
+        stats_activo["pnl"] = round(stats_activo.get("pnl", 0) + pnl, 4)
+
+        patron_vela = features.get("patron_vela", "NINGUNO")
+        stats_activo["patrones_vela"][patron_vela] = stats_activo["patrones_vela"].get(patron_vela, 0) + 1
+
+        regimen = features.get("regimen", "DESCONOCIDO")
+        stats_activo["regimenes"][regimen] = stats_activo["regimenes"].get(regimen, 0) + 1
+
+        stats_activo["ultimo_update"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+        _, _, total_activo, wr_activo = self._stats_resumen(stats_activo)
+
         # ── Activar bloqueo si cumple umbral ─────────────────────────────
         if (total_patron >= MIN_TRADES_PARA_APRENDER and
                 wr_patron < UMBRAL_BLOQUEO_WR and
@@ -359,6 +526,7 @@ class SniperAI:
         wr_global = self.total_wins / max(1, self.total_wins + self.total_losses) * 100
         icon = "✅" if win else "❌"
         print(f"  🧠 IA {icon} | patrón WR={wr_patron*100:.0f}%({p['wins']}W/{p['losses']}L) | "
+              f"activo WR={wr_activo*100:.0f}%({stats_activo['wins']}W/{stats_activo['losses']}L) | "
               f"global WR={wr_global:.1f}%({self.total_wins}W/{self.total_losses}L) | "
               f"racha: {''.join('✅' if r=='WIN' else '❌' for r in self.racha_actual[-5:])}")
 
@@ -412,6 +580,24 @@ class SniperAI:
                       f"btc={f.get('btc','?')} "
                       f"({p['wins']}W/{p['losses']}L)")
 
+        if self.estadisticas_activos:
+            print("  Estadísticas por activo/modelo:")
+            top_activos = sorted(
+                self.estadisticas_activos.items(),
+                key=lambda item: (
+                    item[1].get("wins", 0) + item[1].get("losses", 0),
+                    item[1].get("pnl", 0)
+                ),
+                reverse=True
+            )[:5]
+
+            for clave, stats in top_activos:
+                w, l, total, wr_activo = self._stats_resumen(stats)
+                print(
+                    f"    📌 {clave.replace('|', ' + ')} = {wr_activo*100:.0f}% WR "
+                    f"({w}W/{l}L, pnl {stats.get('pnl', 0):+.2f}, n={total})"
+                )
+
         # Alerta racha
         if len(self.racha_actual) >= 3:
             ultimos3 = self.racha_actual[-3:]
@@ -432,7 +618,8 @@ class SniperAI:
         bloq = sum(1 for p in self.patrones.values() if p.get("bloqueado"))
         racha = "".join("✅" if r=="WIN" else "❌" for r in self.racha_actual[-5:])
         return (f"🧠 IA: WR={wr:.1f}%({self.total_wins}W/{self.total_losses}L) | "
-                f"patrones={len(self.patrones)}({bloq}🚫) | racha={racha}")
+                f"patrones={len(self.patrones)}({bloq}🚫) | "
+                f"activos={len(self.estadisticas_activos)} | racha={racha}")
 
 
 # Instancia global

@@ -1278,10 +1278,10 @@ def loop_principal():
                         continue
 
                     # ── IA: evaluar si el trade debe ejecutarse ──────────
-                    hash_fp, features_fp = sniper_ai.generar_fingerprint(
-                        simbolo, resultado, df_m15, estado_mercado, micro
-                    )
                     contexto_ia = sniper_ai.analizar_contexto_mercado(df_m15)
+                    hash_fp, features_fp = sniper_ai.generar_fingerprint(
+                        simbolo, resultado, df_m15, estado_mercado, micro, contexto_ia
+                    )
                     ia_ok, score_mod, ia_razon = sniper_ai.evaluar_trade(
                         hash_fp, features_fp, resultado, contexto_ia
                     )
@@ -1446,6 +1446,17 @@ def ver_stats_detalle(message):
         bot.reply_to(message, resumen, parse_mode="HTML")
     except Exception as e:
         bot.reply_to(message, f"Error: {e}")
+
+@bot.message_handler(commands=['iastats'])
+def ver_ia_stats(message):
+    try:
+        bot.reply_to(
+            message,
+            sniper_ai.resumen_estadisticas_activos(),
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        bot.reply_to(message, f"Error IA stats: {e}")
 
 @bot.message_handler(commands=['pause'])
 def pause(message):
@@ -1614,6 +1625,7 @@ if __name__ == "__main__":
         "📌 *Comandos Disponibles:*\n"
         "/status → Estado general\n"
         "/trades → Ver trades activos\n"
+        "/iastats → Estadísticas IA por activo/modelo\n"
         "/pause → Pausar bot\n"
         "/resume → Reanudar bot\n"
         "/risk 0.03 → Cambiar riesgo\n"

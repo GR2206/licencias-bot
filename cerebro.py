@@ -41,6 +41,114 @@ SL_MINIMO_PCT = 0.006
 SL_MAXIMO_PCT = 0.025
 RIESGO_MAXIMO_PCT = 0.02
 
+PATRONES_FUERTES_ALCISTAS = {
+    "PINBAR_ALCISTA",
+    "MARTILLO_ALCISTA",
+    "MARTILLO_INVERTIDO_ALCISTA",
+    "ENVOLVENTE_ALCISTA",
+    "PIERCING_LINE_ALCISTA",
+    "TWEEZER_BOTTOM_ALCISTA",
+    "ESTRELLA_MAÑANA",
+    "TRES_SOLDADOS",
+    "MARUBOZU_ALCISTA",
+}
+
+PATRONES_FUERTES_BAJISTAS = {
+    "PINBAR_BAJISTA",
+    "HOMBRE_COLGADO_BAJISTA",
+    "ESTRELLA_FUGAZ_BAJISTA",
+    "ENVOLVENTE_BAJISTA",
+    "DARK_CLOUD_COVER_BAJISTA",
+    "TWEEZER_TOP_BAJISTA",
+    "ESTRELLA_ATARDECER",
+    "TRES_CUERVOS_NEGROS",
+    "MARUBOZU_BAJISTA",
+}
+
+PATRONES_FUERTES = PATRONES_FUERTES_ALCISTAS | PATRONES_FUERTES_BAJISTAS
+
+
+def patrones_fuertes_para_accion(patrones, accion):
+    patrones_norm = {str(p).upper() for p in patrones}
+    if accion == "LONG":
+        return sorted(patrones_norm & PATRONES_FUERTES_ALCISTAS)
+    if accion == "SHORT":
+        return sorted(patrones_norm & PATRONES_FUERTES_BAJISTAS)
+    return []
+
+
+def rsi_saliendo_zona_extrema(df_m15, accion):
+    try:
+        if "rsi" in df_m15.columns:
+            rsi = df_m15["rsi"]
+        else:
+            rsi = ta.rsi(df_m15["close"], length=14)
+
+        actual = float(rsi.iloc[-1])
+        previa = float(rsi.iloc[-2])
+        previa_2 = float(rsi.iloc[-3])
+
+        if accion == "LONG":
+            estuvo_extremo = min(previa_2, previa, actual) <= 35
+            esta_saliendo = actual > previa and actual >= 30
+            return estuvo_extremo and esta_saliendo
+
+        if accion == "SHORT":
+            estuvo_extremo = max(previa_2, previa, actual) >= 65
+            esta_saliendo = actual < previa and actual <= 70
+            return estuvo_extremo and esta_saliendo
+
+    except Exception:
+        pass
+
+    return False
+
+
+def excepcion_volumen_bajo(
+    decision,
+    resultados_filtrados,
+    df_m15,
+    score_ensemble,
+    votos_decision,
+    distancia_sl,
+):
+    accion = decision.get("accion")
+    patrones = identificar_patrones(df_m15)
+    patrones_fuertes = patrones_fuertes_para_accion(patrones, accion)
+
+    tiene_sweep = any(
+        r for r in resultados_filtrados
+        if r and r.get("modelo") == "LIQUIDITY_SWEEP" and r.get("accion") == accion
+    )
+    tiene_mss = any(
+        r for r in resultados_filtrados
+        if r and r.get("modelo") == "MSS" and r.get("accion") == accion
+    )
+
+    score_ok = score_ensemble >= 2.0
+    votos_ok = votos_decision >= 3
+    patron_ok = bool(patrones_fuertes)
+    rsi_ok = rsi_saliendo_zona_extrema(df_m15, accion)
+    sl_ok = SL_MINIMO_PCT <= distancia_sl <= min(0.018, SL_MAXIMO_PCT)
+
+    decision["patrones_vela"] = patrones
+    decision["patrones_fuertes"] = patrones_fuertes
+    decision["volumen_bajo_excepcion"] = all([
+        score_ok, votos_ok, patron_ok, rsi_ok, tiene_sweep, tiene_mss, sl_ok
+    ])
+
+    decision["volumen_bajo_detalle"] = {
+        "score_ok": score_ok,
+        "votos_ok": votos_ok,
+        "patron_ok": patron_ok,
+        "rsi_ok": rsi_ok,
+        "sweep_ok": tiene_sweep,
+        "mss_ok": tiene_mss,
+        "sl_ok": sl_ok,
+    }
+
+    return decision["volumen_bajo_excepcion"]
+
 # =================================
 # CONFIGURACIÓN SCORE
 # =================================
@@ -892,40 +1000,12 @@ def modelo_continuacion(simbolo, df_h1, df_m15, contexto):
 
             patrones_norm = {str(p).upper() for p in patrones}
 
-            # patrones alcistas devueltos por velas.py
-            patrones_alcistas = {
-                "MARTILLO_ALCISTA",
-                "MARTILLO_INVERTIDO_ALCISTA",
-                "PINBAR_ALCISTA",
-                "ENVOLVENTE_ALCISTA",
-                "PIERCING_LINE_ALCISTA",
-                "HARAMI_ALCISTA",
-                "TWEEZER_BOTTOM_ALCISTA",
-                "ESTRELLA_MAÑANA",
-                "TRES_SOLDADOS",
-                "MARUBOZU_ALCISTA",
-            }
-
-            # patrones bajistas devueltos por velas.py
-            patrones_bajistas = {
-                "PINBAR_BAJISTA",
-                "HOMBRE_COLGADO_BAJISTA",
-                "ESTRELLA_FUGAZ_BAJISTA",
-                "ENVOLVENTE_BAJISTA",
-                "DARK_CLOUD_COVER_BAJISTA",
-                "HARAMI_BAJISTA",
-                "TWEEZER_TOP_BAJISTA",
-                "ESTRELLA_ATARDECER",
-                "TRES_CUERVOS_NEGROS",
-                "MARUBOZU_BAJISTA",
-            }
-
-            if patrones_norm & patrones_alcistas:
+            if patrones_norm & PATRONES_FUERTES_ALCISTAS:
                 score += 0.20
                 motivos.append("patron vela alcista")
                 log_activo(simbolo, "✅ Patrón vela alcista")
 
-            if patrones_norm & patrones_bajistas:
+            if patrones_norm & PATRONES_FUERTES_BAJISTAS:
                 score += 0.20
                 motivos.append("patron vela bajista")
                 log_activo(simbolo, "✅ Patrón vela bajista")
@@ -1229,7 +1309,23 @@ def analizar(simbolo, df_h1, estado_mercado, df_m15, df_btc):
 
             print(f"Error filtro BTC: {e}")
 
-       # FILTRO ADX
+        accion_decision = decision.get("accion")
+        score_ensemble = sum(
+            r["score"]
+            for r in resultados_filtrados
+            if r and r.get("accion") == accion_decision
+        )
+
+        votos_decision = sum(
+            1
+            for r in resultados_filtrados
+            if r and r.get("accion") == accion_decision
+        )
+
+        decision["score_ensemble"] = round(score_ensemble, 4)
+        decision["votos_decision"] = votos_decision
+
+        # FILTRO ADX
         try:
 
             if "ADX" in df_m15.columns and not df_m15["ADX"].isna().all():
@@ -1244,21 +1340,7 @@ def analizar(simbolo, df_h1, estado_mercado, df_m15, df_btc):
                     df_m15["close"]
                 )["ADX_14"].iloc[-1]
 
-            # Score REAL del ensemble (suma total, no el mejor individual)
-
-            accion_decision = decision.get("accion")
-
-            score_ensemble = sum(
-                r["score"]
-                for r in resultados_filtrados
-                if r and r.get("accion") == accion_decision
-            )
-
-            votos_decision = sum(
-                1
-                for r in resultados_filtrados
-                if r and r.get("accion") == accion_decision
-            )
+            decision["adx_actual"] = round(float(adx_actual), 2)
 
             if (
                 adx_actual < 18
@@ -1277,6 +1359,31 @@ def analizar(simbolo, df_h1, estado_mercado, df_m15, df_btc):
 
             print(f"{simbolo} ❌ Error filtro ADX: {e}")
 
+        precio_actual = df_m15["close"].iloc[-1]
+
+        sl = calcular_sl(simbolo, df_h1, decision["accion"])
+
+        if sl is None:
+            return {"accion": "ESPERAR"}
+
+        distancia_sl = abs(precio_actual - sl) / precio_actual
+        decision["distancia_sl_pct"] = round(distancia_sl * 100, 3)
+
+        log_activo(simbolo, f"🛑 SL distancia: {distancia_sl*100:.2f}%")
+
+        # SL demasiado pequeño o demasiado grande para operar con control.
+        if distancia_sl < SL_MINIMO_PCT:
+
+            log_activo(simbolo, f"❌ SL demasiado pequeño ({distancia_sl*100:.2f}%)")
+
+            return {"accion": "ESPERAR"}
+
+        if distancia_sl > SL_MAXIMO_PCT:
+
+            log_activo(simbolo, f"❌ SL demasiado grande ({distancia_sl*100:.2f}% > {SL_MAXIMO_PCT*100:.2f}%)")
+
+            return {"accion": "ESPERAR"}
+
         # FILTRO VOLUMEN
         try:
 
@@ -1284,8 +1391,36 @@ def analizar(simbolo, df_h1, estado_mercado, df_m15, df_btc):
             vol_media = df_m15["volume"].rolling(30).mean().iloc[-1]
 
             if vol_actual < vol_media * 0.7:
-                log_activo(simbolo, "❌ volumen bajo")
-                return {"accion": "ESPERAR"}
+                if excepcion_volumen_bajo(
+                    decision,
+                    resultados_filtrados,
+                    df_m15,
+                    score_ensemble,
+                    votos_decision,
+                    distancia_sl,
+                ):
+                    log_activo(simbolo, "⚠️ Volumen bajo permitido por confluencia")
+                else:
+                    detalle = decision.get("volumen_bajo_detalle", {})
+                    nombres_faltantes = {
+                        "score_ok": "score",
+                        "votos_ok": "votos",
+                        "patron_ok": "patrón",
+                        "rsi_ok": "RSI",
+                        "sweep_ok": "sweep",
+                        "mss_ok": "MSS",
+                        "sl_ok": "SL",
+                    }
+                    faltantes = [
+                        nombres_faltantes.get(nombre, nombre)
+                        for nombre, ok in detalle.items()
+                        if not ok
+                    ]
+                    log_activo(
+                        simbolo,
+                        f"❌ volumen bajo | falta: {', '.join(faltantes[:3])}"
+                    )
+                    return {"accion": "ESPERAR"}
 
         except:
             pass
@@ -1308,30 +1443,6 @@ def analizar(simbolo, df_h1, estado_mercado, df_m15, df_btc):
 
         except:
             pass
-        
-        precio_actual = df_m15["close"].iloc[-1]
-
-        sl = calcular_sl(simbolo, df_h1, decision["accion"])
-
-        if sl is None:
-            return {"accion": "ESPERAR"}
-
-        distancia_sl = abs(precio_actual - sl) / precio_actual
-
-        log_activo(simbolo, f"🛑 SL distancia: {distancia_sl*100:.2f}%")
-
-        # SL demasiado pequeño o demasiado grande para operar con control.
-        if distancia_sl < SL_MINIMO_PCT:
-
-            log_activo(simbolo, f"❌ SL demasiado pequeño ({distancia_sl*100:.2f}%)")
-
-            return {"accion": "ESPERAR"}
-
-        if distancia_sl > SL_MAXIMO_PCT:
-
-            log_activo(simbolo, f"❌ SL demasiado grande ({distancia_sl*100:.2f}% > {SL_MAXIMO_PCT*100:.2f}%)")
-
-            return {"accion": "ESPERAR"}
 
         # =============================
         # 🎯 TP DINÁMICO (SCALP vs NORMAL)
@@ -1354,6 +1465,14 @@ def analizar(simbolo, df_h1, estado_mercado, df_m15, df_btc):
         else:
             tp = precio_actual - dist * rr
 
+
+        if "patrones_vela" not in decision:
+            patrones = identificar_patrones(df_m15)
+            decision["patrones_vela"] = patrones
+            decision["patrones_fuertes"] = patrones_fuertes_para_accion(
+                patrones,
+                decision["accion"]
+            )
 
         decision["precio"] = precio_actual
         decision["sl_precio"] = sl
