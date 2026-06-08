@@ -3,13 +3,48 @@ import pandas_ta as ta
 from velas import identificar_patrones
 import requests
 import textwrap
+from colorama import Fore, Style, init
+init(autoreset=True)
 COL_ACTIVO = 12
 LOG_MSG_WIDTH = 48
 
+
+def color_log(mensaje: str):
+    mensaje_lower = mensaje.lower()
+
+    if mensaje.startswith(("❌", "🚫")):
+        return Style.BRIGHT + Fore.RED
+
+    if any(palabra in mensaje_lower for palabra in [
+        "bloqueado",
+        "demasiado grande",
+        "demasiado pequeño",
+        "volumen bajo",
+        "volatilidad baja",
+        "adx débil",
+        "vela indecisión",
+    ]):
+        return Style.BRIGHT + Fore.RED
+
+    if any(palabra in mensaje_lower for palabra in [
+        "confirmado",
+        "protegido correctamente",
+        "trade abierto",
+    ]):
+        return Style.BRIGHT + Fore.GREEN
+
+    if mensaje.startswith(("⚠️", "⏳")):
+        return Style.BRIGHT + Fore.YELLOW
+
+    return Fore.WHITE
+
+
 def log_activo(simbolo: str, mensaje: str, primera_linea: bool = False):
 
+    mensaje = str(mensaje)
+    color = color_log(mensaje)
     lineas = textwrap.wrap(
-        str(mensaje),
+        mensaje,
         width=LOG_MSG_WIDTH,
         break_long_words=False,
         replace_whitespace=False
@@ -17,7 +52,7 @@ def log_activo(simbolo: str, mensaje: str, primera_linea: bool = False):
 
     for i, linea in enumerate(lineas):
         etiqueta = simbolo if primera_linea and i == 0 else ""
-        print(f"{etiqueta:<{COL_ACTIVO}} | {linea}")
+        print(f"{etiqueta:<{COL_ACTIVO}} | {color}{linea}{Style.RESET_ALL}")
 
 # =================================
 # CONFIGURACIÓN GENERAL

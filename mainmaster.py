@@ -33,17 +33,43 @@ REGIMEN_CORTO = {
     "DESCONOCIDO": "DESCONOCIDO",
 }
 
+
+def color_log(mensaje: str, tipo: str):
+    mensaje_lower = mensaje.lower()
+
+    if tipo == "error" or mensaje.startswith(("❌", "🚫")):
+        return Style.BRIGHT + Fore.RED
+
+    if any(palabra in mensaje_lower for palabra in [
+        "bloqueado",
+        "vetó",
+        "demasiado grande",
+        "demasiado pequeño",
+        "volumen bajo",
+        "sin protección",
+    ]):
+        return Style.BRIGHT + Fore.RED
+
+    if tipo == "ok" or any(palabra in mensaje_lower for palabra in [
+        "confirmado",
+        "protegido correctamente",
+        "trade abierto",
+    ]):
+        return Style.BRIGHT + Fore.GREEN
+
+    if tipo == "wait" or mensaje.startswith(("⏳", "⚠️")):
+        return Style.BRIGHT + Fore.YELLOW
+
+    return Fore.CYAN if tipo == "info" else Fore.WHITE
+
+
 def log_activo(simbolo: str, mensaje: str, primera_linea: bool = False, tipo="info"):
 
-    color = {
-        "ok": Fore.GREEN,
-        "error": Fore.RED,
-        "wait": Fore.YELLOW,
-        "info": Fore.CYAN
-    }.get(tipo, Fore.WHITE)
+    mensaje = str(mensaje)
+    color = color_log(mensaje, tipo)
 
     lineas = textwrap.wrap(
-        str(mensaje),
+        mensaje,
         width=LOG_MSG_WIDTH,
         break_long_words=False,
         replace_whitespace=False
@@ -1001,7 +1027,7 @@ def ejecutar_trade(simbolo, analisis):
         }
         print(f"  {sniper_ai.estado()}")
 
-        print(f"{simbolo} protegido correctamente con SL y TP.")
+        log_activo(simbolo, "✅ Trade abierto y protegido correctamente con SL y TP", True, "ok")
 
         enviar_senal_canal(
             f"🚀 *SNIPER PRO 3.0*\n\n"
