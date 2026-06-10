@@ -107,6 +107,8 @@ BOT_PAUSADO = False
 RIESGO_REAL_BASE = 0.01        # 1% del balance si el stop loss se ejecuta
 RIESGO_REAL_MAXIMO = 0.015     # límite absoluto del 1.5% tras ajuste por score
 MAX_MARGEN_POR_TRADE = getattr(config, "PORCENTAJE_POR_TRADE", 0.10)
+OPORTUNIDAD_MAX_MARGEN_PCT = 0.08
+OPORTUNIDAD_RIESGO_REAL = 0.008
 
 client = Client(config.BINANCE_API_KEY, config.BINANCE_API_SECRET)
 client._timestamp_offset = client.get_server_time()['serverTime'] - int(time.time() * 1000)
@@ -829,6 +831,13 @@ def ejecutar_trade(simbolo, analisis):
             porcentaje_riesgo_real = RIESGO_REAL_BASE * 0.60
 
         porcentaje_riesgo_real = min(porcentaje_riesgo_real, RIESGO_REAL_MAXIMO)
+
+        if analisis.get("modo_oportunidad_controlada"):
+            porcentaje_riesgo_real = min(
+                porcentaje_riesgo_real,
+                analisis.get("riesgo_real_override", OPORTUNIDAD_RIESGO_REAL)
+            )
+
         riesgo_usdt_objetivo = balance_total * porcentaje_riesgo_real
 
         if riesgo_usdt_objetivo <= 0:
@@ -840,7 +849,11 @@ def ejecutar_trade(simbolo, analisis):
         cantidad = riesgo_usdt_objetivo / distancia_sl_precio
         notional = cantidad * precio
 
-        margen_maximo = balance_total * MAX_MARGEN_POR_TRADE
+        max_margen_pct = analisis.get(
+            "max_margen_pct",
+            OPORTUNIDAD_MAX_MARGEN_PCT if analisis.get("modo_oportunidad_controlada") else MAX_MARGEN_POR_TRADE
+        )
+        margen_maximo = balance_total * max_margen_pct
         notional_maximo = margen_maximo * leverage
         posicion_capada = False
 
@@ -859,6 +872,7 @@ def ejecutar_trade(simbolo, analisis):
             simbolo,
             f"📊 Score {score:.2f} → Riesgo real {porcentaje_riesgo_real*100:.2f}% "
             f"(${riesgo_usdt_estimado:.2f}) → Margen ${margen_usar:.2f}"
+            f"{' | OPORT 8%' if analisis.get('modo_oportunidad_controlada') else ''}"
             f"{' | CAP margen' if posicion_capada else ''}",
             True
         )
@@ -1020,8 +1034,10 @@ def ejecutar_trade(simbolo, analisis):
             "entrada": precio_real,
             "direccion": accion,
             "margen": margen_usar,
+            "max_margen_pct": max_margen_pct,
             "riesgo_usdt": riesgo_usdt_estimado,
             "riesgo_pct": porcentaje_riesgo_real,
+            "modo_oportunidad_controlada": analisis.get("modo_oportunidad_controlada", False),
             "hash_fp"    : analisis.get("hash_fp", ""),
             "features_fp": analisis.get("features_fp", {}),
         }
@@ -1036,6 +1052,7 @@ def ejecutar_trade(simbolo, analisis):
             f"💰 Margen usado: ${margen_requerido:.2f}\n"
             f"⚙️ Leverage: x{config.LEVERAGE}\n"            
             f"⚠️ Riesgo real: {porcentaje_riesgo_real*100:.2f}% (${riesgo_usdt_estimado:.2f})\n"
+            f"🛡️ Modo: {'Oportunidad controlada 8%' if analisis.get('modo_oportunidad_controlada') else 'Normal'}\n"
             f"🧠 Modelo: {analisis.get('modelo')}\n"
             f"🎯 Score: {analisis.get('score'):.2f}\n"
             f"📍 Entrada: {precio:.4f}\n"
@@ -1229,10 +1246,16 @@ def loop_principal():
 
                 micro = detectar_micro_tendencia(df_m15)
 
-                modo_contra = False
+                modo_contra = bool(resultado.get("modo_contra", False))
+                oportunidad_controlada = resultado.get("modo_oportunidad_controlada", False)
 
                 # 🎯 BTC ALCISTA
-                if macro == "ALCISTA":
+                if oportunidad_controlada:
+
+                    modo_contra = True
+                    log_activo(simbolo, "🛡️ Filtro macro omitido: oportunidad controlada")
+
+                elif macro == "ALCISTA":
 
                     if micro == "BAJISTA_MICRO":
                         # Corrección en tendencia alcista → permitir LONG si score es alto

@@ -75,6 +75,10 @@ ATR_MULTIPLICADOR_SL = 2.2
 SL_MINIMO_PCT = 0.006
 SL_MAXIMO_PCT = 0.025
 RIESGO_MAXIMO_PCT = 0.02
+OPORTUNIDAD_SCORE_MIN = 4.0
+OPORTUNIDAD_VOTOS_MIN = 5
+OPORTUNIDAD_SL_MAX_PCT = 0.018
+OPORTUNIDAD_RR = 2.5
 
 PATRONES_FUERTES_ALCISTAS = {
     "PINBAR_ALCISTA",
@@ -183,6 +187,58 @@ def excepcion_volumen_bajo(
     }
 
     return decision["volumen_bajo_excepcion"]
+
+
+def score_y_votos(resultados_filtrados, accion):
+    score = sum(
+        r["score"]
+        for r in resultados_filtrados
+        if r and r.get("accion") == accion
+    )
+    votos = sum(
+        1
+        for r in resultados_filtrados
+        if r and r.get("accion") == accion
+    )
+    return score, votos
+
+
+def es_oportunidad_controlada(decision, resultados_filtrados, score_ensemble, votos_decision):
+    accion = decision.get("accion")
+    modelos = {
+        r.get("modelo")
+        for r in resultados_filtrados
+        if r and r.get("accion") == accion
+    }
+
+    tiene_mss = "MSS" in modelos
+    tiene_impulso = bool(modelos & {
+        "BREAKOUT",
+        "VOL_EXPANSION",
+        "VWAP_RECLAIM",
+        "LIQUIDITY_SWEEP",
+        "LIQUIDITY_VOID",
+    })
+
+    return (
+        score_ensemble >= OPORTUNIDAD_SCORE_MIN
+        and votos_decision >= OPORTUNIDAD_VOTOS_MIN
+        and tiene_mss
+        and tiene_impulso
+    )
+
+
+def activar_oportunidad_controlada(decision, motivo, score_ensemble, votos_decision):
+    decision["modo_oportunidad_controlada"] = True
+    decision["modo_contra"] = True
+    decision["rr_objetivo"] = OPORTUNIDAD_RR
+    decision["max_margen_pct"] = 0.08
+    decision["riesgo_real_override"] = 0.008
+    decision["sl_max_pct_override"] = OPORTUNIDAD_SL_MAX_PCT
+    decision["motivos"] = decision.get("motivos", []) + [
+        f"oportunidad controlada: {motivo}",
+        f"score ensemble {score_ensemble:.2f} / votos {votos_decision}",
+    ]
 
 # =================================
 # CONFIGURACIÓN SCORE
@@ -1277,7 +1333,16 @@ def analizar(simbolo, df_h1, estado_mercado, df_m15, df_btc):
         # FILTROS CONFIRMACIÓN
         # =============================
 
-       # ============================
+        accion_decision = decision.get("accion")
+        score_ensemble, votos_decision = score_y_votos(
+            resultados_filtrados,
+            accion_decision
+        )
+
+        decision["score_ensemble"] = round(score_ensemble, 4)
+        decision["votos_decision"] = votos_decision
+
+        # ============================
         # FILTRO BTC INTELIGENTE
         # ============================
 
@@ -1320,8 +1385,22 @@ def analizar(simbolo, df_h1, estado_mercado, df_m15, df_btc):
 
                 if not correccion_valida:
 
-                    log_activo(simbolo, "🚫 SHORT bloqueado (no corrección real)")
-                    return {"accion": "ESPERAR"}
+                    if es_oportunidad_controlada(
+                        decision,
+                        resultados_filtrados,
+                        score_ensemble,
+                        votos_decision
+                    ):
+                        activar_oportunidad_controlada(
+                            decision,
+                            "SHORT contra BTC alcista sin corrección clásica",
+                            score_ensemble,
+                            votos_decision
+                        )
+                        log_activo(simbolo, "⚠️ SHORT permitido como oportunidad controlada")
+                    else:
+                        log_activo(simbolo, "🚫 SHORT bloqueado (no corrección real)")
+                        return {"accion": "ESPERAR"}
 
                 else:
 
@@ -1332,8 +1411,22 @@ def analizar(simbolo, df_h1, estado_mercado, df_m15, df_btc):
 
                 if not correccion_valida:
 
-                    log_activo(simbolo, "🚫 LONG bloqueado (no corrección real)")
-                    return {"accion": "ESPERAR"}
+                    if es_oportunidad_controlada(
+                        decision,
+                        resultados_filtrados,
+                        score_ensemble,
+                        votos_decision
+                    ):
+                        activar_oportunidad_controlada(
+                            decision,
+                            "LONG contra BTC bajista sin corrección clásica",
+                            score_ensemble,
+                            votos_decision
+                        )
+                        log_activo(simbolo, "⚠️ LONG permitido como oportunidad controlada")
+                    else:
+                        log_activo(simbolo, "🚫 LONG bloqueado (no corrección real)")
+                        return {"accion": "ESPERAR"}
 
                 else:
 
@@ -1343,22 +1436,6 @@ def analizar(simbolo, df_h1, estado_mercado, df_m15, df_btc):
         except Exception as e:
 
             print(f"Error filtro BTC: {e}")
-
-        accion_decision = decision.get("accion")
-        score_ensemble = sum(
-            r["score"]
-            for r in resultados_filtrados
-            if r and r.get("accion") == accion_decision
-        )
-
-        votos_decision = sum(
-            1
-            for r in resultados_filtrados
-            if r and r.get("accion") == accion_decision
-        )
-
-        decision["score_ensemble"] = round(score_ensemble, 4)
-        decision["votos_decision"] = votos_decision
 
         # FILTRO ADX
         try:
@@ -1416,6 +1493,18 @@ def analizar(simbolo, df_h1, estado_mercado, df_m15, df_btc):
         if distancia_sl > SL_MAXIMO_PCT:
 
             log_activo(simbolo, f"❌ SL demasiado grande ({distancia_sl*100:.2f}% > {SL_MAXIMO_PCT*100:.2f}%)")
+
+            return {"accion": "ESPERAR"}
+
+        if (
+            decision.get("modo_oportunidad_controlada")
+            and distancia_sl > decision.get("sl_max_pct_override", OPORTUNIDAD_SL_MAX_PCT)
+        ):
+
+            log_activo(
+                simbolo,
+                f"❌ oportunidad controlada exige SL corto ({distancia_sl*100:.2f}% > {OPORTUNIDAD_SL_MAX_PCT*100:.2f}%)"
+            )
 
             return {"accion": "ESPERAR"}
 
@@ -1483,7 +1572,12 @@ def analizar(simbolo, df_h1, estado_mercado, df_m15, df_btc):
         # 🎯 TP DINÁMICO (SCALP vs NORMAL)
         # =============================
 
-        if decision.get("modo_contra"):
+        if decision.get("modo_oportunidad_controlada"):
+
+            rr = decision.get("rr_objetivo", OPORTUNIDAD_RR)
+            log_activo(simbolo, "🎯 Oportunidad controlada (RR 1:2.5)")
+
+        elif decision.get("modo_contra"):
 
             rr = RR_SCALP
             log_activo(simbolo, "🎯 Trade de CORRECCIÓN (TP corto)")
