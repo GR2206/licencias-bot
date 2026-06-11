@@ -1266,15 +1266,16 @@ def loop_principal():
                             log_activo(simbolo, "📉 Compra en corrección BTC (score suficiente)")
                             # permitir, no hacer continue
                         else:
-                            log_activo(simbolo, "⏳ Corrección BTC, score insuficiente")
-                            continue
+                            log_activo(simbolo, "⚠️ Corrección BTC, continúa con riesgo controlado")
+                            modo_contra = True
 
                     elif micro == "ALCISTA_MICRO":
                         
                         if resultado["accion"] != "LONG":
 
                              if resultado.get("score", 0) < 1.8:
-                                  continue
+                                  log_activo(simbolo, "⚠️ Contra micro BTC, continúa si filtros finales aprueban")
+                                  modo_contra = True
                         
 
                 # 🎯 BTC BAJISTA
@@ -1286,14 +1287,16 @@ def loop_principal():
                             log_activo(simbolo, "🔺 Corrección BTC → LONG SCALP")
                             modo_contra = True
                         else:
-                            continue
+                            log_activo(simbolo, "⚠️ Contra corrección BTC, continúa con riesgo controlado")
+                            modo_contra = True
 
                     elif micro == "BAJISTA_MICRO":
 
                         
                         if resultado["accion"] != "SHORT":
                              if resultado.get("score", 0) < 1.8:
-                                  continue
+                                  log_activo(simbolo, "⚠️ Contra micro BTC, continúa si filtros finales aprueban")
+                                  modo_contra = True
 
                 resultado["modo_contra"] = modo_contra
 
@@ -1313,13 +1316,17 @@ def loop_principal():
                         "VOL_EXPANSION"
                     ]
                     score_suficiente = resultado.get("score", 0) >= 1.0
+                    confluencia_fuerte = (
+                        resultado.get("score_ensemble", 0) >= 2.4
+                        and resultado.get("votos_decision", 0) >= 3
+                    )
 
-                    if not (modelo_fuerte and score_suficiente):
+                    if not ((modelo_fuerte and score_suficiente) or confluencia_fuerte):
                         log_activo(simbolo, "❌ Vela indecisión")
                         print()
                         continue
                     else:
-                        log_activo(simbolo, "⚠️ Vela indecisión ignorada (breakout confirmado)")
+                        log_activo(simbolo, "⚠️ Vela indecisión ignorada por confluencia")
 
                 if validacion_final(simbolo, resultado, df_h1, df_m15):
 

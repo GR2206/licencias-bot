@@ -75,8 +75,8 @@ ATR_MULTIPLICADOR_SL = 2.2
 SL_MINIMO_PCT = 0.006
 SL_MAXIMO_PCT = 0.025
 RIESGO_MAXIMO_PCT = 0.02
-OPORTUNIDAD_SCORE_MIN = 4.0
-OPORTUNIDAD_VOTOS_MIN = 5
+OPORTUNIDAD_SCORE_MIN = 2.6
+OPORTUNIDAD_VOTOS_MIN = 3
 OPORTUNIDAD_SL_MAX_PCT = 0.018
 OPORTUNIDAD_RR = 2.5
 
@@ -164,17 +164,21 @@ def excepcion_volumen_bajo(
         if r and r.get("modelo") == "MSS" and r.get("accion") == accion
     )
 
-    score_ok = score_ensemble >= 2.0
+    score_ok = score_ensemble >= 2.4
     votos_ok = votos_decision >= 3
     patron_ok = bool(patrones_fuertes)
     rsi_ok = rsi_saliendo_zona_extrema(df_m15, accion)
     sl_ok = SL_MINIMO_PCT <= distancia_sl <= min(0.018, SL_MAXIMO_PCT)
+    confirmaciones_extra = sum([patron_ok, rsi_ok, tiene_sweep, tiene_mss])
 
     decision["patrones_vela"] = patrones
     decision["patrones_fuertes"] = patrones_fuertes
-    decision["volumen_bajo_excepcion"] = all([
-        score_ok, votos_ok, patron_ok, rsi_ok, tiene_sweep, tiene_mss, sl_ok
-    ])
+    decision["volumen_bajo_excepcion"] = (
+        score_ok
+        and votos_ok
+        and sl_ok
+        and confirmaciones_extra >= 2
+    )
 
     decision["volumen_bajo_detalle"] = {
         "score_ok": score_ok,
@@ -212,19 +216,22 @@ def es_oportunidad_controlada(decision, resultados_filtrados, score_ensemble, vo
     }
 
     tiene_mss = "MSS" in modelos
-    tiene_impulso = bool(modelos & {
+    modelos_impulso = modelos & {
         "BREAKOUT",
         "VOL_EXPANSION",
         "VWAP_RECLAIM",
         "LIQUIDITY_SWEEP",
         "LIQUIDITY_VOID",
-    })
+    }
+    tiene_impulso = bool(modelos_impulso)
 
     return (
         score_ensemble >= OPORTUNIDAD_SCORE_MIN
         and votos_decision >= OPORTUNIDAD_VOTOS_MIN
-        and tiene_mss
-        and tiene_impulso
+        and (
+            (tiene_mss and tiene_impulso)
+            or (votos_decision >= 4 and len(modelos_impulso) >= 2)
+        )
     )
 
 
@@ -1019,6 +1026,50 @@ def calcular_sl(simbolo, df_h1, accion):
         return None
 
 # ===============================
+# CÁLCULO SL M15 DE RESCATE
+# ===============================
+
+def calcular_sl_m15_rescate(simbolo, df_m15, accion):
+
+    try:
+
+        atr = ta.atr(
+            df_m15['high'],
+            df_m15['low'],
+            df_m15['close'],
+            length=14
+        ).iloc[-1]
+
+        precio = df_m15["close"].iloc[-1]
+
+        if accion == "LONG":
+            swing = df_m15["low"].tail(12).min()
+            sl = swing - (atr * 1.2)
+        elif accion == "SHORT":
+            swing = df_m15["high"].tail(12).max()
+            sl = swing + (atr * 1.2)
+        else:
+            return None
+
+        distancia = abs(precio - sl) / precio
+
+        if distancia < SL_MINIMO_PCT:
+            sl = precio * (
+                1 - SL_MINIMO_PCT if accion == "LONG" else 1 + SL_MINIMO_PCT
+            )
+            distancia = abs(precio - sl) / precio
+
+        log_activo(simbolo, f"🛟 SL M15 rescate: {sl:.6f} ({distancia*100:.2f}%)")
+
+        return sl
+
+    except Exception as e:
+
+        print(f"{simbolo} error SL M15 rescate: {e}")
+
+        return None
+
+# ===============================
 #  MODELO BREAKEOUT
 # ===============================
 
@@ -1482,6 +1533,21 @@ def analizar(simbolo, df_h1, estado_mercado, df_m15, df_btc):
         decision["distancia_sl_pct"] = round(distancia_sl * 100, 3)
 
         log_activo(simbolo, f"🛑 SL distancia: {distancia_sl*100:.2f}%")
+
+        if distancia_sl > SL_MAXIMO_PCT:
+            sl_rescate = calcular_sl_m15_rescate(
+                simbolo,
+                df_m15,
+                decision["accion"]
+            )
+            if sl_rescate is not None:
+                distancia_rescate = abs(precio_actual - sl_rescate) / precio_actual
+                if SL_MINIMO_PCT <= distancia_rescate <= SL_MAXIMO_PCT:
+                    sl = sl_rescate
+                    distancia_sl = distancia_rescate
+                    decision["sl_rescate_m15"] = True
+                    decision["distancia_sl_pct"] = round(distancia_sl * 100, 3)
+                    log_activo(simbolo, f"✅ SL H1 reemplazado por M15 ({distancia_sl*100:.2f}%)")
 
         # SL demasiado pequeño o demasiado grande para operar con control.
         if distancia_sl < SL_MINIMO_PCT:
