@@ -110,18 +110,50 @@ MAX_MARGEN_POR_TRADE = getattr(config, "PORCENTAJE_POR_TRADE", 0.10)
 OPORTUNIDAD_MAX_MARGEN_PCT = 0.08
 OPORTUNIDAD_RIESGO_REAL = 0.008
 
+SIMBOLOS_PREFERENTES = {
+    "CHZUSDT",
+    "FILUSDT",
+    "ETHUSDT",
+    "XMRUSDT",
+    "INJUSDT",
+    "SOLUSDT",
+}
 
-def calcular_perfil_inversion(analisis: dict):
+SIMBOLOS_EXIGENTES = {
+    "OPUSDT",
+    "NEARUSDT",
+    "LINKUSDT",
+    "DOTUSDT",
+}
+
+SIMBOLOS_CUIDADO = {
+    "BTCUSDT",
+}
+
+
+def perfil_simbolo(simbolo: str):
+    if simbolo in SIMBOLOS_PREFERENTES:
+        return "PREFERENTE"
+    if simbolo in SIMBOLOS_EXIGENTES:
+        return "EXIGENTE"
+    if simbolo in SIMBOLOS_CUIDADO:
+        return "CUIDADO"
+    return "NORMAL"
+
+
+def calcular_perfil_inversion(simbolo: str, analisis: dict):
     """Define margen máximo y riesgo real según score/confluencia."""
 
     score = float(analisis.get("score", 0.85))
     score_ensemble = float(analisis.get("score_ensemble", 0) or 0)
     votos = int(analisis.get("votos_decision", 0) or 0)
     score_ref = max(score, score_ensemble)
+    perfil_activo = perfil_simbolo(simbolo)
 
     if analisis.get("modo_oportunidad_controlada"):
         return {
             "perfil": "OPORTUNIDAD_CONTROLADA",
+            "perfil_simbolo": perfil_activo,
             "score_ref": score_ref,
             "max_margen_pct": min(
                 analisis.get("max_margen_pct", OPORTUNIDAD_MAX_MARGEN_PCT),
@@ -147,44 +179,39 @@ def calcular_perfil_inversion(analisis: dict):
     if analisis.get("volumen_bajo_excepcion") is not True:
         positivos += 1
 
-    if score_ref <= 0.95:
+    def perfil(nombre, margen, riesgo):
+        if perfil_activo == "EXIGENTE":
+            margen = min(margen, 0.06)
+            riesgo = min(riesgo, 0.006)
+            nombre = f"{nombre}_EXIGENTE"
+        elif perfil_activo == "CUIDADO":
+            margen = min(margen, 0.05)
+            riesgo = min(riesgo, 0.005)
+            nombre = f"{nombre}_CUIDADO"
+        elif perfil_activo == "PREFERENTE":
+            nombre = f"{nombre}_PREFERENTE"
+
         return {
-            "perfil": "MINIMO_SCORE",
+            "perfil": nombre,
+            "perfil_simbolo": perfil_activo,
             "score_ref": score_ref,
-            "max_margen_pct": 0.008,
-            "riesgo_real_pct": 0.004,
+            "max_margen_pct": margen,
+            "riesgo_real_pct": riesgo,
         }
+
+    if score_ref <= 0.95:
+        return perfil("MINIMO_SCORE", 0.008, 0.004)
 
     if score_ref < 1.50:
-        return {
-            "perfil": "BAJO",
-            "score_ref": score_ref,
-            "max_margen_pct": 0.05,
-            "riesgo_real_pct": 0.006,
-        }
+        return perfil("BAJO", 0.05, 0.006)
 
     if score_ref >= 4.0 and votos >= 5 and positivos >= 4:
-        return {
-            "perfil": "ELITE_15",
-            "score_ref": score_ref,
-            "max_margen_pct": 0.15,
-            "riesgo_real_pct": RIESGO_REAL_MAXIMO,
-        }
+        return perfil("ELITE_15", 0.15, RIESGO_REAL_MAXIMO)
 
     if score_ref >= 2.60 and votos >= 3 and positivos >= 3:
-        return {
-            "perfil": "ALTO_12",
-            "score_ref": score_ref,
-            "max_margen_pct": 0.12,
-            "riesgo_real_pct": 0.012,
-        }
+        return perfil("ALTO_12", 0.12, 0.012)
 
-    return {
-        "perfil": "NORMAL_10",
-        "score_ref": score_ref,
-        "max_margen_pct": 0.10,
-        "riesgo_real_pct": RIESGO_REAL_BASE,
-    }
+    return perfil("NORMAL_10", 0.10, RIESGO_REAL_BASE)
 
 client = Client(config.BINANCE_API_KEY, config.BINANCE_API_SECRET)
 client._timestamp_offset = client.get_server_time()['serverTime'] - int(time.time() * 1000)
@@ -896,7 +923,7 @@ def ejecutar_trade(simbolo, analisis):
             log_activo(simbolo, "❌ Precio o SL inválido para calcular riesgo", True, "error")
             return
 
-        perfil_inversion = calcular_perfil_inversion(analisis)
+        perfil_inversion = calcular_perfil_inversion(simbolo, analisis)
         porcentaje_riesgo_real = min(
             perfil_inversion["riesgo_real_pct"],
             RIESGO_REAL_MAXIMO
@@ -1097,6 +1124,7 @@ def ejecutar_trade(simbolo, analisis):
             "margen": margen_usar,
             "max_margen_pct": max_margen_pct,
             "perfil_inversion": perfil_inversion["perfil"],
+            "perfil_simbolo": perfil_inversion["perfil_simbolo"],
             "score_ref": perfil_inversion["score_ref"],
             "riesgo_usdt": riesgo_usdt_estimado,
             "riesgo_pct": porcentaje_riesgo_real,
@@ -1114,6 +1142,7 @@ def ejecutar_trade(simbolo, analisis):
             f"📈 Dirección: {accion}\n\n"
             f"💰 Margen usado: ${margen_requerido:.2f}\n"
             f"📦 Perfil inversión: {perfil_inversion['perfil']} ({max_margen_pct*100:.1f}% max)\n"
+            f"🧬 Perfil símbolo: {perfil_inversion['perfil_simbolo']}\n"
             f"⚙️ Leverage: x{config.LEVERAGE}\n"            
             f"⚠️ Riesgo real: {porcentaje_riesgo_real*100:.2f}% (${riesgo_usdt_estimado:.2f})\n"
             f"🛡️ Modo: {'Oportunidad controlada 8%' if analisis.get('modo_oportunidad_controlada') else 'Normal'}\n"

@@ -80,6 +80,26 @@ OPORTUNIDAD_VOTOS_MIN = 3
 OPORTUNIDAD_SL_MAX_PCT = 0.018
 OPORTUNIDAD_RR = 2.5
 
+SIMBOLOS_PREFERENTES = {
+    "CHZUSDT",
+    "FILUSDT",
+    "ETHUSDT",
+    "XMRUSDT",
+    "INJUSDT",
+    "SOLUSDT",
+}
+
+SIMBOLOS_EXIGENTES = {
+    "OPUSDT",
+    "NEARUSDT",
+    "LINKUSDT",
+    "DOTUSDT",
+}
+
+SIMBOLOS_CUIDADO = {
+    "BTCUSDT",
+}
+
 PATRONES_FUERTES_ALCISTAS = {
     "PINBAR_ALCISTA",
     "MARTILLO_ALCISTA",
@@ -105,6 +125,16 @@ PATRONES_FUERTES_BAJISTAS = {
 }
 
 PATRONES_FUERTES = PATRONES_FUERTES_ALCISTAS | PATRONES_FUERTES_BAJISTAS
+
+
+def perfil_simbolo(simbolo):
+    if simbolo in SIMBOLOS_PREFERENTES:
+        return "PREFERENTE"
+    if simbolo in SIMBOLOS_EXIGENTES:
+        return "EXIGENTE"
+    if simbolo in SIMBOLOS_CUIDADO:
+        return "CUIDADO"
+    return "NORMAL"
 
 
 def patrones_fuertes_para_accion(patrones, accion):
@@ -1392,6 +1422,8 @@ def analizar(simbolo, df_h1, estado_mercado, df_m15, df_btc):
 
         decision["score_ensemble"] = round(score_ensemble, 4)
         decision["votos_decision"] = votos_decision
+        perfil_activo = perfil_simbolo(simbolo)
+        decision["perfil_simbolo"] = perfil_activo
 
         # ============================
         # FILTRO BTC INTELIGENTE
@@ -1548,6 +1580,36 @@ def analizar(simbolo, df_h1, estado_mercado, df_m15, df_btc):
                     decision["sl_rescate_m15"] = True
                     decision["distancia_sl_pct"] = round(distancia_sl * 100, 3)
                     log_activo(simbolo, f"✅ SL H1 reemplazado por M15 ({distancia_sl*100:.2f}%)")
+
+        if perfil_activo == "EXIGENTE":
+            if score_ensemble < 2.2 or votos_decision < 3:
+                log_activo(
+                    simbolo,
+                    f"🚫 Símbolo exigente requiere más confluencia ({score_ensemble:.2f}/{votos_decision})"
+                )
+                return {"accion": "ESPERAR"}
+
+            if distancia_sl > 0.020:
+                log_activo(
+                    simbolo,
+                    f"🚫 Símbolo exigente requiere SL <= 2.0% ({distancia_sl*100:.2f}%)"
+                )
+                return {"accion": "ESPERAR"}
+
+        if perfil_activo == "CUIDADO":
+            if score_ensemble < 2.6 or votos_decision < 3:
+                log_activo(
+                    simbolo,
+                    f"🚫 BTC en modo cuidado requiere score/votos ({score_ensemble:.2f}/{votos_decision})"
+                )
+                return {"accion": "ESPERAR"}
+
+            if distancia_sl > 0.018:
+                log_activo(
+                    simbolo,
+                    f"🚫 BTC exige SL corto <= 1.8% ({distancia_sl*100:.2f}%)"
+                )
+                return {"accion": "ESPERAR"}
 
         # SL demasiado pequeño o demasiado grande para operar con control.
         if distancia_sl < SL_MINIMO_PCT:
