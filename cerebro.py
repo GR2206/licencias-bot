@@ -100,6 +100,9 @@ SIMBOLOS_CUIDADO = {
     "BTCUSDT",
 }
 
+ALTCOIN_BTC_OVERRIDE_SCORE = 2.4
+ALTCOIN_BTC_OVERRIDE_VOTOS = 3
+
 PATRONES_FUERTES_ALCISTAS = {
     "PINBAR_ALCISTA",
     "MARTILLO_ALCISTA",
@@ -276,6 +279,33 @@ def activar_oportunidad_controlada(decision, motivo, score_ensemble, votos_decis
         f"oportunidad controlada: {motivo}",
         f"score ensemble {score_ensemble:.2f} / votos {votos_decision}",
     ]
+
+
+def altcoin_puede_ignorar_btc(simbolo, decision, resultados_filtrados, score_ensemble, votos_decision):
+    if simbolo in SIMBOLOS_CUIDADO:
+        return False
+
+    accion = decision.get("accion")
+    modelos = {
+        r.get("modelo")
+        for r in resultados_filtrados
+        if r and r.get("accion") == accion
+    }
+
+    modelos_validos = modelos & {
+        "BREAKOUT",
+        "VOL_EXPANSION",
+        "VWAP_RECLAIM",
+        "LIQUIDITY_SWEEP",
+        "LIQUIDITY_VOID",
+        "MSS",
+    }
+
+    return (
+        score_ensemble >= ALTCOIN_BTC_OVERRIDE_SCORE
+        and votos_decision >= ALTCOIN_BTC_OVERRIDE_VOTOS
+        and len(modelos_validos) >= 2
+    )
 
 # =================================
 # CONFIGURACIÓN SCORE
@@ -1468,7 +1498,21 @@ def analizar(simbolo, df_h1, estado_mercado, df_m15, df_btc):
 
                 if not correccion_valida:
 
-                    if es_oportunidad_controlada(
+                    if altcoin_puede_ignorar_btc(
+                        simbolo,
+                        decision,
+                        resultados_filtrados,
+                        score_ensemble,
+                        votos_decision
+                    ):
+                        decision["ignora_btc_por_confluencia"] = True
+                        decision["modo_contra"] = True
+                        decision["motivos"] = decision.get("motivos", []) + [
+                            f"altcoin ignora BTC por confluencia {score_ensemble:.2f}/{votos_decision}"
+                        ]
+                        log_activo(simbolo, "⚠️ Altcoin ignora BTC por confluencia fuerte")
+
+                    elif es_oportunidad_controlada(
                         decision,
                         resultados_filtrados,
                         score_ensemble,
@@ -1494,7 +1538,21 @@ def analizar(simbolo, df_h1, estado_mercado, df_m15, df_btc):
 
                 if not correccion_valida:
 
-                    if es_oportunidad_controlada(
+                    if altcoin_puede_ignorar_btc(
+                        simbolo,
+                        decision,
+                        resultados_filtrados,
+                        score_ensemble,
+                        votos_decision
+                    ):
+                        decision["ignora_btc_por_confluencia"] = True
+                        decision["modo_contra"] = True
+                        decision["motivos"] = decision.get("motivos", []) + [
+                            f"altcoin ignora BTC por confluencia {score_ensemble:.2f}/{votos_decision}"
+                        ]
+                        log_activo(simbolo, "⚠️ Altcoin ignora BTC por confluencia fuerte")
+
+                    elif es_oportunidad_controlada(
                         decision,
                         resultados_filtrados,
                         score_ensemble,

@@ -102,8 +102,8 @@ balance_total = 0.0
 inicio_bot = datetime.now()
 BOT_PAUSADO = False
 
-# Gestión de riesgo real: PORCENTAJE_POR_TRADE queda como límite de margen,
-# no como pérdida máxima. La pérdida máxima se calcula contra la distancia al SL.
+# Gestión de tamaño: el margen por trade sale del perfil 8/10/12/15%.
+# El riesgo se estima contra el SL para mostrarlo, no para reducir la posición.
 RIESGO_REAL_BASE = 0.01        # 1% del balance si el stop loss se ejecuta
 RIESGO_REAL_MAXIMO = 0.015     # límite absoluto del 1.5% tras ajuste por score
 MAX_MARGEN_POR_TRADE = getattr(config, "PORCENTAJE_POR_TRADE", 0.10)
@@ -155,14 +155,8 @@ def calcular_perfil_inversion(simbolo: str, analisis: dict):
             "perfil": "OPORTUNIDAD_CONTROLADA",
             "perfil_simbolo": perfil_activo,
             "score_ref": score_ref,
-            "max_margen_pct": min(
-                analisis.get("max_margen_pct", OPORTUNIDAD_MAX_MARGEN_PCT),
-                OPORTUNIDAD_MAX_MARGEN_PCT
-            ),
-            "riesgo_real_pct": min(
-                analisis.get("riesgo_real_override", OPORTUNIDAD_RIESGO_REAL),
-                OPORTUNIDAD_RIESGO_REAL
-            ),
+            "max_margen_pct": OPORTUNIDAD_MAX_MARGEN_PCT,
+            "riesgo_real_pct": OPORTUNIDAD_RIESGO_REAL,
         }
 
     positivos = 0
@@ -181,12 +175,12 @@ def calcular_perfil_inversion(simbolo: str, analisis: dict):
 
     def perfil(nombre, margen, riesgo):
         if perfil_activo == "EXIGENTE":
-            margen = min(margen, 0.06)
-            riesgo = min(riesgo, 0.006)
+            margen = min(margen, 0.08)
+            riesgo = min(riesgo, 0.008)
             nombre = f"{nombre}_EXIGENTE"
         elif perfil_activo == "CUIDADO":
-            margen = min(margen, 0.05)
-            riesgo = min(riesgo, 0.005)
+            margen = min(margen, 0.08)
+            riesgo = min(riesgo, 0.008)
             nombre = f"{nombre}_CUIDADO"
         elif perfil_activo == "PREFERENTE":
             nombre = f"{nombre}_PREFERENTE"
@@ -200,10 +194,10 @@ def calcular_perfil_inversion(simbolo: str, analisis: dict):
         }
 
     if score_ref <= 0.95:
-        return perfil("MINIMO_SCORE", 0.008, 0.004)
+        return perfil("BAJO_8", 0.08, 0.008)
 
     if score_ref < 1.50:
-        return perfil("BAJO", 0.05, 0.006)
+        return perfil("BAJO_8", 0.08, 0.008)
 
     if score_ref >= 4.0 and votos >= 5 and positivos >= 4:
         return perfil("ELITE_15", 0.15, RIESGO_REAL_MAXIMO)
@@ -924,34 +918,21 @@ def ejecutar_trade(simbolo, analisis):
             return
 
         perfil_inversion = calcular_perfil_inversion(simbolo, analisis)
-        porcentaje_riesgo_real = min(
-            perfil_inversion["riesgo_real_pct"],
-            RIESGO_REAL_MAXIMO
-        )
-
-        riesgo_usdt_objetivo = balance_total * porcentaje_riesgo_real
-
-        if riesgo_usdt_objetivo <= 0:
-            return
-
         leverage = config.LEVERAGE
 
-        # Cantidad calculada para que, si toca SL, la pérdida sea el riesgo objetivo.
-        cantidad = riesgo_usdt_objetivo / distancia_sl_precio
-        notional = cantidad * precio
-
         max_margen_pct = perfil_inversion["max_margen_pct"]
-        margen_maximo = balance_total * max_margen_pct
-        notional_maximo = margen_maximo * leverage
-        posicion_capada = False
+        margen_objetivo = balance_total * max_margen_pct
 
-        if notional > notional_maximo:
-            notional = notional_maximo
-            cantidad = notional / precio
-            posicion_capada = True
+        if margen_objetivo <= 0:
+            return
+
+        # Tamaño por margen objetivo: 8%, 10% o 15% del balance de futuros.
+        notional = margen_objetivo * leverage
+        cantidad = notional / precio
 
         margen_usar = notional / leverage
         riesgo_usdt_estimado = cantidad * distancia_sl_precio
+        riesgo_estimado_pct = (riesgo_usdt_estimado / balance_total) if balance_total > 0 else 0
 
         if margen_usar <= 0 or cantidad <= 0:
             return
@@ -959,9 +940,8 @@ def ejecutar_trade(simbolo, analisis):
         log_activo(
             simbolo,
             f"📊 Perfil {perfil_inversion['perfil']} | Score ref {perfil_inversion['score_ref']:.2f} "
-            f"→ Margen max {max_margen_pct*100:.1f}% | Riesgo real {porcentaje_riesgo_real*100:.2f}% "
-            f"(${riesgo_usdt_estimado:.2f}) → Margen ${margen_usar:.2f}"
-            f"{' | CAP margen' if posicion_capada else ''}",
+            f"→ Margen {max_margen_pct*100:.1f}% (${margen_usar:.2f}) | "
+            f"Riesgo estimado SL {riesgo_estimado_pct*100:.2f}% (${riesgo_usdt_estimado:.2f})",
             True
         )
 
@@ -975,6 +955,7 @@ def ejecutar_trade(simbolo, analisis):
         notional = cantidad * precio
         margen_usar = notional / leverage
         riesgo_usdt_estimado = cantidad * distancia_sl_precio
+        riesgo_estimado_pct = (riesgo_usdt_estimado / balance_total) if balance_total > 0 else 0
 
         if cantidad <= 0 or notional <= 0:
             return
@@ -1127,7 +1108,7 @@ def ejecutar_trade(simbolo, analisis):
             "perfil_simbolo": perfil_inversion["perfil_simbolo"],
             "score_ref": perfil_inversion["score_ref"],
             "riesgo_usdt": riesgo_usdt_estimado,
-            "riesgo_pct": porcentaje_riesgo_real,
+            "riesgo_pct": riesgo_estimado_pct,
             "modo_oportunidad_controlada": analisis.get("modo_oportunidad_controlada", False),
             "hash_fp"    : analisis.get("hash_fp", ""),
             "features_fp": analisis.get("features_fp", {}),
@@ -1144,7 +1125,7 @@ def ejecutar_trade(simbolo, analisis):
             f"📦 Perfil inversión: {perfil_inversion['perfil']} ({max_margen_pct*100:.1f}% max)\n"
             f"🧬 Perfil símbolo: {perfil_inversion['perfil_simbolo']}\n"
             f"⚙️ Leverage: x{config.LEVERAGE}\n"            
-            f"⚠️ Riesgo real: {porcentaje_riesgo_real*100:.2f}% (${riesgo_usdt_estimado:.2f})\n"
+            f"⚠️ Riesgo estimado SL: {riesgo_estimado_pct*100:.2f}% (${riesgo_usdt_estimado:.2f})\n"
             f"🛡️ Modo: {'Oportunidad controlada 8%' if analisis.get('modo_oportunidad_controlada') else 'Normal'}\n"
             f"🧠 Modelo: {analisis.get('modelo')}\n"
             f"🎯 Score: {analisis.get('score'):.2f} | Ref: {perfil_inversion['score_ref']:.2f}\n"
