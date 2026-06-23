@@ -1383,24 +1383,54 @@ def loop_principal():
                 cuerpo = abs(vela["close"] - vela["open"])
                 mecha = vela["high"] - vela["low"]
 
-                if cuerpo < mecha * 0.35:
+                if mecha > 0 and cuerpo < mecha * 0.35:
                     modelo_fuerte = resultado.get("modelo", "") in [
                         "BREAKOUT",
                         "MSS",
-                        "VOL_EXPANSION"
+                        "VOL_EXPANSION",
+                        "LIQUIDITY_SWEEP",
+                        "ORDER_BLOCK",
+                        "REVERSAL",
+                        "VWAP_RECLAIM"
                     ]
                     score_suficiente = resultado.get("score", 0) >= 1.0
                     confluencia_fuerte = (
-                        resultado.get("score_ensemble", 0) >= 2.4
-                        and resultado.get("votos_decision", 0) >= 3
+                        resultado.get("score_ensemble", 0) >= 1.8
+                        and resultado.get("votos_decision", 0) >= 2
                     )
+                    motivos_texto = " ".join(resultado.get("motivos", [])).lower()
+                    senal_tecnica = any(
+                        palabra in motivos_texto
+                        for palabra in [
+                            "patron vela",
+                            "estructura",
+                            "divergencia",
+                            "order block",
+                            "liquidez",
+                            "vwap",
+                            "volumen",
+                        ]
+                    )
+                    doji_extremo = cuerpo < mecha * 0.15
 
-                    if not ((modelo_fuerte and score_suficiente) or confluencia_fuerte):
-                        log_activo(simbolo, "❌ Vela indecisión")
+                    if doji_extremo and not (confluencia_fuerte or (modelo_fuerte and score_suficiente)):
+                        log_activo(simbolo, "❌ Doji extremo sin confluencia")
                         print()
                         continue
+
+                    if not (
+                        (modelo_fuerte and score_suficiente)
+                        or confluencia_fuerte
+                        or senal_tecnica
+                    ):
+                        log_activo(simbolo, "❌ Vela indecisión sin señal técnica")
+                        print()
+                        continue
+
+                    if doji_extremo:
+                        log_activo(simbolo, "⚠️ Doji extremo aceptado por confluencia")
                     else:
-                        log_activo(simbolo, "⚠️ Vela indecisión ignorada por confluencia")
+                        log_activo(simbolo, "⚠️ Vela con mecha aceptada por señal")
 
                 if validacion_final(simbolo, resultado, df_h1, df_m15):
 
