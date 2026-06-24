@@ -513,6 +513,122 @@ def validar_gatillo_m5(simbolo, accion, df_h1, df_m5, resultado):
     except Exception as e:
         return False, f"Error gatillo M5: {e}"
 
+
+def detectar_impulso_m5(simbolo, df_h1, df_m15, df_m5):
+    """
+    Fallback scalping: si M15 no arma ensemble suficiente, H1 define sesgo
+    y M5 puede generar una señal rápida en impulsos claros.
+    """
+    try:
+        tendencia_h1 = detectar_tendencia_h1(df_h1)
+
+        if tendencia_h1.startswith("SHORT"):
+            accion = "SHORT"
+        elif tendencia_h1.startswith("LONG"):
+            accion = "LONG"
+        else:
+            return {"accion": "ESPERAR"}
+
+        ema9 = ta.ema(df_m5["close"], length=9)
+        ema21 = ta.ema(df_m5["close"], length=21)
+        ema20_m15 = ta.ema(df_m15["close"], length=20)
+        rsi = ta.rsi(df_m5["close"], length=14)
+        macd = ta.macd(df_m5["close"])
+        macd_hist = macd["MACDh_12_26_9"]
+        atr_m5 = ta.atr(df_m5["high"], df_m5["low"], df_m5["close"], length=14).iloc[-1]
+
+        close = df_m5["close"]
+        volume = df_m5["volume"]
+        vol_media = volume.rolling(20).mean().iloc[-1]
+        vela = df_m5.iloc[-1]
+        cuerpo = abs(vela["close"] - vela["open"])
+        rango = max(vela["high"] - vela["low"], 1e-12)
+
+        triggers = []
+
+        if accion == "SHORT":
+            if ema9.iloc[-1] < ema21.iloc[-1]:
+                triggers.append("EMA M5 bajista")
+            if close.iloc[-1] < df_m5["low"].iloc[-2]:
+                triggers.append("ruptura low M5")
+            if close.iloc[-1] < ema20_m15.iloc[-1]:
+                triggers.append("precio bajo EMA20 M15")
+            if rsi.iloc[-1] < 45 and rsi.iloc[-1] < rsi.iloc[-2]:
+                triggers.append("RSI M5 bajista")
+            if macd_hist.iloc[-1] < macd_hist.iloc[-2]:
+                triggers.append("MACD M5 bajista")
+            if vela["close"] < vela["open"] and cuerpo / rango > 0.45:
+                triggers.append("vela M5 fuerte")
+
+            swing = df_m5["high"].tail(10).max()
+            sl = swing + atr_m5 * 0.8
+            precio = close.iloc[-1]
+            dist = abs(sl - precio)
+            min_dist = precio * 0.006
+            if dist < min_dist:
+                sl = precio + min_dist
+                dist = min_dist
+            tp = precio - dist * 1.7
+
+        else:
+            if ema9.iloc[-1] > ema21.iloc[-1]:
+                triggers.append("EMA M5 alcista")
+            if close.iloc[-1] > df_m5["high"].iloc[-2]:
+                triggers.append("ruptura high M5")
+            if close.iloc[-1] > ema20_m15.iloc[-1]:
+                triggers.append("precio sobre EMA20 M15")
+            if rsi.iloc[-1] > 55 and rsi.iloc[-1] > rsi.iloc[-2]:
+                triggers.append("RSI M5 alcista")
+            if macd_hist.iloc[-1] > macd_hist.iloc[-2]:
+                triggers.append("MACD M5 alcista")
+            if vela["close"] > vela["open"] and cuerpo / rango > 0.45:
+                triggers.append("vela M5 fuerte")
+
+            swing = df_m5["low"].tail(10).min()
+            sl = swing - atr_m5 * 0.8
+            precio = close.iloc[-1]
+            dist = abs(precio - sl)
+            min_dist = precio * 0.006
+            if dist < min_dist:
+                sl = precio - min_dist
+                dist = min_dist
+            tp = precio + dist * 1.7
+
+        if volume.iloc[-1] > vol_media:
+            triggers.append("volumen M5")
+
+        distancia_sl = dist / precio if precio else 1
+        if distancia_sl > 0.018:
+            log_activo(simbolo, f"⏳ Impulso M5 sin entrada: SL {distancia_sl*100:.2f}%")
+            return {"accion": "ESPERAR"}
+
+        if len(triggers) < 4:
+            return {"accion": "ESPERAR"}
+
+        log_activo(simbolo, f"⚡ Impulso M5 {accion}: {' + '.join(triggers[:4])}")
+
+        return {
+            "modelo": "IMPULSO_M5",
+            "accion": accion,
+            "score": round(1.2 + len(triggers) * 0.25, 2),
+            "score_ensemble": round(1.8 + len(triggers) * 0.25, 2),
+            "votos_decision": min(len(triggers), 5),
+            "precio": precio,
+            "sl_precio": sl,
+            "tp_precio": tp,
+            "distancia_sl_pct": round(distancia_sl * 100, 3),
+            "rr_objetivo": 1.7,
+            "modo_scalping_m5": True,
+            "gatillo_m5_ok": True,
+            "gatillo_m5": triggers,
+            "tendencia_h1": tendencia_h1,
+            "motivos": [f"impulso M5: {t}" for t in triggers],
+        }
+
+    except Exception as e:
+        print(f"{simbolo} error impulso M5: {e}")
+        return {"accion": "ESPERAR"}
+
 # ======================================
 # DIVERGENCIA
 # ======================================
@@ -803,13 +919,17 @@ def validacion_final(simbolo, resultado, df_h1, df_m15):
 
     if "rsi" in df_m15.columns:
         rsi_actual = df_m15['rsi'].iloc[-1]
+        modo_scalping_m5 = resultado.get("modo_scalping_m5", False)
 
-        if accion == "LONG" and rsi_actual > 70:
+        rsi_long_max = 78 if modo_scalping_m5 else 70
+        rsi_short_min = 22 if modo_scalping_m5 else 30
+
+        if accion == "LONG" and rsi_actual > rsi_long_max:
             log_activo(simbolo, f"❌ RSI sobrecompra ({rsi_actual:.2f})")
             return False
 
-        if accion == "SHORT" and rsi_actual < 30:
-            log_activo(simbolo, f"❌ RSI sobrecompra ({rsi_actual:.2f})")
+        if accion == "SHORT" and rsi_actual < rsi_short_min:
+            log_activo(simbolo, f"❌ RSI sobreventa ({rsi_actual:.2f})")
             return False
 
 
@@ -1419,6 +1539,14 @@ def loop_principal():
                     df_btc
                 )
 
+                if resultado.get("accion") not in ["LONG", "SHORT"]:
+                    resultado = detectar_impulso_m5(simbolo, df_h1, df_m15, df_m5)
+
+                if resultado.get("accion") not in ["LONG", "SHORT"]:
+                    log_activo(simbolo, "⏳ ESPERAR")
+                    print()
+                    continue
+
                 # ==============================
                 # 🧠 MACRO BTC + MICRO (SNIPER)
                 # ==============================
@@ -1487,23 +1615,27 @@ def loop_principal():
                     continue
 
                 if resultado.get("accion") in ["LONG", "SHORT"]:
-                    m5_ok, m5_razon = validar_gatillo_m5(
-                        simbolo,
-                        resultado["accion"],
-                        df_h1,
-                        df_m5,
-                        resultado
-                    )
+                    if resultado.get("gatillo_m5_ok"):
+                        m5_razon = " + ".join(resultado.get("gatillo_m5", [])[:4])
+                        log_activo(simbolo, f"✅ Gatillo M5: {m5_razon}")
+                    else:
+                        m5_ok, m5_razon = validar_gatillo_m5(
+                            simbolo,
+                            resultado["accion"],
+                            df_h1,
+                            df_m5,
+                            resultado
+                        )
 
-                    if not m5_ok:
-                        log_activo(simbolo, f"⏳ Gatillo M5 espera: {m5_razon}")
-                        print()
-                        continue
+                        if not m5_ok:
+                            log_activo(simbolo, f"⏳ Gatillo M5 espera: {m5_razon}")
+                            print()
+                            continue
 
-                    log_activo(simbolo, f"✅ Gatillo M5: {m5_razon}")
-                    resultado["motivos"] = resultado.get("motivos", []) + [
-                        f"gatillo M5: {m5_razon}"
-                    ]
+                        log_activo(simbolo, f"✅ Gatillo M5: {m5_razon}")
+                        resultado["motivos"] = resultado.get("motivos", []) + [
+                            f"gatillo M5: {m5_razon}"
+                        ]
                 
                 vela = df_m15.iloc[-1]
 
