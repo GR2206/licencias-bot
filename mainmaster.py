@@ -416,6 +416,103 @@ def detectar_micro_tendencia(df_m15):
     else:
         return "RANGO_MICRO"
 
+
+def detectar_tendencia_h1(df_h1):
+    try:
+        ema20 = ta.ema(df_h1["close"], length=20)
+        ema50 = ta.ema(df_h1["close"], length=50)
+        ema200 = ta.ema(df_h1["close"], length=200)
+        precio = df_h1["close"].iloc[-1]
+
+        if ema20.iloc[-1] > ema50.iloc[-1] and precio > ema200.iloc[-1]:
+            return "LONG"
+
+        if ema20.iloc[-1] < ema50.iloc[-1] and precio < ema200.iloc[-1]:
+            return "SHORT"
+
+        if ema20.iloc[-1] > ema50.iloc[-1]:
+            return "LONG_SUAVE"
+
+        if ema20.iloc[-1] < ema50.iloc[-1]:
+            return "SHORT_SUAVE"
+
+    except Exception as e:
+        print(f"Error tendencia H1: {e}")
+
+    return "RANGO"
+
+
+def validar_gatillo_m5(simbolo, accion, df_h1, df_m5, resultado):
+    """
+    H1 define dirección, M15 arma setup y M5 dispara entrada.
+    Si H1 marca long, no toma short; si H1 marca short, no toma long.
+    """
+    try:
+        tendencia_h1 = detectar_tendencia_h1(df_h1)
+        resultado["tendencia_h1"] = tendencia_h1
+
+        if tendencia_h1.startswith("LONG") and accion == "SHORT":
+            return False, f"H1 {tendencia_h1} bloquea SHORT"
+
+        if tendencia_h1.startswith("SHORT") and accion == "LONG":
+            return False, f"H1 {tendencia_h1} bloquea LONG"
+
+        ema9 = ta.ema(df_m5["close"], length=9)
+        ema21 = ta.ema(df_m5["close"], length=21)
+        rsi = ta.rsi(df_m5["close"], length=14)
+        macd = ta.macd(df_m5["close"])
+        macd_hist = macd["MACDh_12_26_9"]
+
+        vela = df_m5.iloc[-1]
+        close = df_m5["close"]
+        volume = df_m5["volume"]
+        vol_media = volume.rolling(20).mean().iloc[-1]
+
+        triggers = []
+
+        if accion == "LONG":
+            if ema9.iloc[-1] > ema21.iloc[-1]:
+                triggers.append("EMA M5 alcista")
+            if close.iloc[-1] > df_m5["high"].iloc[-2]:
+                triggers.append("ruptura M5")
+            if rsi.iloc[-1] > rsi.iloc[-2] and rsi.iloc[-1] > 45:
+                triggers.append("RSI M5 girando")
+            if macd_hist.iloc[-1] > macd_hist.iloc[-2]:
+                triggers.append("MACD M5 mejora")
+            if vela["close"] > vela["open"]:
+                triggers.append("vela M5 verde")
+
+        elif accion == "SHORT":
+            if ema9.iloc[-1] < ema21.iloc[-1]:
+                triggers.append("EMA M5 bajista")
+            if close.iloc[-1] < df_m5["low"].iloc[-2]:
+                triggers.append("ruptura M5")
+            if rsi.iloc[-1] < rsi.iloc[-2] and rsi.iloc[-1] < 55:
+                triggers.append("RSI M5 girando")
+            if macd_hist.iloc[-1] < macd_hist.iloc[-2]:
+                triggers.append("MACD M5 mejora")
+            if vela["close"] < vela["open"]:
+                triggers.append("vela M5 roja")
+
+        if volume.iloc[-1] > vol_media * 0.8:
+            triggers.append("volumen M5 ok")
+
+        score_ensemble = resultado.get("score_ensemble", 0)
+        votos = resultado.get("votos_decision", 0)
+        requeridos = 2 if score_ensemble >= 2.4 or votos >= 3 else 3
+
+        if len(triggers) >= requeridos:
+            resultado["gatillo_m5_ok"] = True
+            resultado["gatillo_m5"] = triggers
+            return True, " + ".join(triggers[:4])
+
+        resultado["gatillo_m5_ok"] = False
+        resultado["gatillo_m5"] = triggers
+        return False, f"M5 sin gatillo suficiente ({len(triggers)}/{requeridos})"
+
+    except Exception as e:
+        return False, f"Error gatillo M5: {e}"
+
 # ======================================
 # DIVERGENCIA
 # ======================================
@@ -1247,7 +1344,18 @@ def loop_principal():
                     columns=['t','o','h','l','c','v','ct','q','n','tq','tb','ig']
                 )
 
-                for df in [df_h1, df_m15]:
+                k_m5 = client.futures_klines(
+                    symbol=simbolo,
+                    interval="5m",
+                    limit=200
+                )
+
+                df_m5 = pd.DataFrame(
+                    k_m5,
+                    columns=['t','o','h','l','c','v','ct','q','n','tq','tb','ig']
+                )
+
+                for df in [df_h1, df_m15, df_m5]:
                     df['open'] = pd.to_numeric(df['o'])
                     df['high'] = pd.to_numeric(df['h'])
                     df['low'] = pd.to_numeric(df['l'])
@@ -1377,6 +1485,25 @@ def loop_principal():
                 
                 if simbolo in ultimo_intento and time.time() - ultimo_intento[simbolo] < 60:
                     continue
+
+                if resultado.get("accion") in ["LONG", "SHORT"]:
+                    m5_ok, m5_razon = validar_gatillo_m5(
+                        simbolo,
+                        resultado["accion"],
+                        df_h1,
+                        df_m5,
+                        resultado
+                    )
+
+                    if not m5_ok:
+                        log_activo(simbolo, f"⏳ Gatillo M5 espera: {m5_razon}")
+                        print()
+                        continue
+
+                    log_activo(simbolo, f"✅ Gatillo M5: {m5_razon}")
+                    resultado["motivos"] = resultado.get("motivos", []) + [
+                        f"gatillo M5: {m5_razon}"
+                    ]
                 
                 vela = df_m15.iloc[-1]
 
@@ -1398,6 +1525,7 @@ def loop_principal():
                         resultado.get("score_ensemble", 0) >= 1.8
                         and resultado.get("votos_decision", 0) >= 2
                     )
+                    gatillo_m5_ok = resultado.get("gatillo_m5_ok", False)
                     motivos_texto = " ".join(resultado.get("motivos", [])).lower()
                     senal_tecnica = any(
                         palabra in motivos_texto
@@ -1413,12 +1541,18 @@ def loop_principal():
                     )
                     doji_extremo = cuerpo < mecha * 0.15
 
-                    if doji_extremo and not (confluencia_fuerte or (modelo_fuerte and score_suficiente)):
+                    if doji_extremo and not (
+                        gatillo_m5_ok
+                        or confluencia_fuerte
+                        or (modelo_fuerte and score_suficiente)
+                    ):
                         log_activo(simbolo, "❌ Doji extremo sin confluencia")
                         print()
                         continue
 
                     if not (
+                        gatillo_m5_ok
+                        or
                         (modelo_fuerte and score_suficiente)
                         or confluencia_fuerte
                         or senal_tecnica
@@ -1428,9 +1562,9 @@ def loop_principal():
                         continue
 
                     if doji_extremo:
-                        log_activo(simbolo, "⚠️ Doji extremo aceptado por confluencia")
+                        log_activo(simbolo, "⚠️ Doji extremo aceptado por M5/confluencia")
                     else:
-                        log_activo(simbolo, "⚠️ Vela con mecha aceptada por señal")
+                        log_activo(simbolo, "⚠️ Vela con mecha aceptada por M5/señal")
 
                 if validacion_final(simbolo, resultado, df_h1, df_m15):
 
