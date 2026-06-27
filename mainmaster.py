@@ -110,13 +110,27 @@ MAX_MARGEN_POR_TRADE = getattr(config, "PORCENTAJE_POR_TRADE", 0.10)
 OPORTUNIDAD_MAX_MARGEN_PCT = 0.08
 OPORTUNIDAD_RIESGO_REAL = 0.008
 
+# ── Control de riesgo y pausas ─────────────────────────────────────────────
+COOLDOWN_SL_HORAS = 8
+COOLDOWN_SL_MULTIPLE_HORAS = 24
+SL_PARA_COOLDOWN_LARGO = 2
+PERDIDA_DIARIA_MAX_PCT = 0.04
+PAUSA_TRAS_SL_CONSECUTIVOS = 4
+SCORE_CALIDAD_MIN = 1.05
+SCORE_CALIDAD_MIN_EXIGENTE = 1.30
+SCORE_CALIDAD_MIN_CONTRA = 1.40
+IMPULSO_M5_ACTIVO = False
+
+cooldown_sl = {}
+estadisticas_dia = {"fecha": "", "pnl": 0.0, "sl_consecutivos": 0}
+historial_simbolos = {}
+
 SIMBOLOS_PREFERENTES = {
     "CHZUSDT",
-    "FILUSDT",
     "ETHUSDT",
     "XMRUSDT",
-    "INJUSDT",
     "SOLUSDT",
+    "SUIUSDT",
 }
 
 SIMBOLOS_EXIGENTES = {
@@ -124,6 +138,12 @@ SIMBOLOS_EXIGENTES = {
     "NEARUSDT",
     "LINKUSDT",
     "DOTUSDT",
+    "FILUSDT",
+    "INJUSDT",
+    "FETUSDT",
+    "TIAUSDT",
+    "ADAUSDT",
+    "LTCUSDT",
 }
 
 SIMBOLOS_CUIDADO = {
@@ -201,6 +221,10 @@ def calcular_perfil_inversion(simbolo: str, analisis: dict):
 
     if score_ref < 1.50:
         return perfil("BAJO_8", 0.08, 0.008)
+
+    # Durante racha negativa reciente, solo operar con margen mínimo
+    if estadisticas_dia.get("sl_consecutivos", 0) >= 2:
+        return perfil("DEFENSIVO_8", 0.08, 0.008)
 
     if score_ref >= 2.20 and votos >= 4 and positivos >= 4:
         return perfil("ELITE_15", 0.15, RIESGO_REAL_MAXIMO)
@@ -383,7 +407,10 @@ def guardar_en_bitacora(simbolo, direccion, entrada, salida, pnl):
 def guardar_estado():
     data = {
         "trades_activos": trades_activos,
-        "trades_info": trades_info
+        "trades_info": trades_info,
+        "cooldown_sl": cooldown_sl,
+        "estadisticas_dia": estadisticas_dia,
+        "historial_simbolos": historial_simbolos,
     }
 
     with open("estado_trades.json", "w") as f:
@@ -392,7 +419,7 @@ def guardar_estado():
 # ======================================
 
 def cargar_estado():
-    global trades_activos, trades_info
+    global trades_activos, trades_info, cooldown_sl, estadisticas_dia, historial_simbolos
 
     if os.path.exists("estado_trades.json"):
         with open("estado_trades.json", "r") as f:
@@ -400,6 +427,147 @@ def cargar_estado():
 
             trades_activos = data.get("trades_activos", [])
             trades_info = data.get("trades_info", {})
+            cooldown_sl = data.get("cooldown_sl", {})
+            estadisticas_dia = data.get("estadisticas_dia", {"fecha": "", "pnl": 0.0, "sl_consecutivos": 0})
+            historial_simbolos = data.get("historial_simbolos", {})
+
+
+def _fecha_hoy() -> str:
+    return datetime.now().strftime("%Y-%m-%d")
+
+
+def _reset_estadisticas_dia_si_corresponde():
+    global estadisticas_dia
+    hoy = _fecha_hoy()
+    if estadisticas_dia.get("fecha") != hoy:
+        estadisticas_dia = {"fecha": hoy, "pnl": 0.0, "sl_consecutivos": 0}
+
+
+def recuperar_datos_entrada(simbolo):
+    try:
+        trades_hist = client.futures_account_trades(symbol=simbolo, limit=30)
+        if len(trades_hist) < 2:
+            return "N/A", 0.0
+
+        cierre = trades_hist[-1]
+        side_cierre = cierre["side"]
+        direccion = "LONG" if side_cierre == "SELL" else "SHORT"
+        side_entrada = "BUY" if direccion == "LONG" else "SELL"
+
+        entradas = [t for t in trades_hist[:-1] if t["side"] == side_entrada]
+        if not entradas:
+            return direccion, float(cierre.get("price", 0))
+
+        total_qty = sum(float(t["qty"]) for t in entradas)
+        if total_qty <= 0:
+            return direccion, float(entradas[-1]["price"])
+
+        precio_entrada = sum(float(t["price"]) * float(t["qty"]) for t in entradas) / total_qty
+        return direccion, precio_entrada
+    except Exception as e:
+        print(f"⚠️ No se pudo recuperar entrada de {simbolo}: {e}")
+        return "N/A", 0.0
+
+
+def registrar_resultado_operacion(simbolo, pnl: float):
+    global BOT_PAUSADO, estadisticas_dia, cooldown_sl, historial_simbolos
+
+    _reset_estadisticas_dia_si_corresponde()
+    estadisticas_dia["pnl"] = round(estadisticas_dia.get("pnl", 0) + pnl, 4)
+
+    if pnl <= 0:
+        estadisticas_dia["sl_consecutivos"] = estadisticas_dia.get("sl_consecutivos", 0) + 1
+        horas_cooldown = COOLDOWN_SL_HORAS
+
+        hist = historial_simbolos.setdefault(simbolo, [])
+        hist.append({"ts": time.time(), "pnl": pnl})
+        historial_simbolos[simbolo] = hist[-20:]
+
+        sl_recientes = sum(1 for t in hist[-6:] if t["pnl"] <= 0)
+        if sl_recientes >= SL_PARA_COOLDOWN_LARGO:
+            horas_cooldown = COOLDOWN_SL_MULTIPLE_HORAS
+
+        cooldown_sl[simbolo] = time.time() + horas_cooldown * 3600
+        log_activo(simbolo, f"🧊 Cooldown {horas_cooldown}h tras SL", True, "wait")
+
+        if estadisticas_dia["sl_consecutivos"] >= PAUSA_TRAS_SL_CONSECUTIVOS:
+            BOT_PAUSADO = True
+            msg = (
+                f"⏸ Bot pausado: {estadisticas_dia['sl_consecutivos']} SL consecutivos. "
+                f"Usá /resume para reanudar."
+            )
+            print(msg)
+            enviar_telegram_privado(msg)
+    else:
+        estadisticas_dia["sl_consecutivos"] = 0
+
+    if balance_total > 0:
+        perdida_pct = abs(min(0, estadisticas_dia["pnl"])) / balance_total
+        if estadisticas_dia["pnl"] < 0 and perdida_pct >= PERDIDA_DIARIA_MAX_PCT:
+            BOT_PAUSADO = True
+            msg = (
+                f"⏸ Bot pausado: pérdida diaria {perdida_pct*100:.1f}% "
+                f"(límite {PERDIDA_DIARIA_MAX_PCT*100:.0f}%)."
+            )
+            print(msg)
+            enviar_telegram_privado(msg)
+
+    guardar_estado()
+
+
+def simbolo_en_cooldown(simbolo: str) -> bool:
+    hasta = cooldown_sl.get(simbolo, 0)
+    if hasta and time.time() < hasta:
+        restante = int((hasta - time.time()) / 60)
+        log_activo(simbolo, f"🧊 En cooldown ({restante} min restantes)", True, "wait")
+        return True
+    return False
+
+
+def puede_operar_globalmente() -> bool:
+    global BOT_PAUSADO
+
+    _reset_estadisticas_dia_si_corresponde()
+
+    if BOT_PAUSADO:
+        print("⏸ Bot pausado — no se abren trades nuevos")
+        return False
+
+    if estadisticas_dia.get("sl_consecutivos", 0) >= PAUSA_TRAS_SL_CONSECUTIVOS:
+        BOT_PAUSADO = True
+        return False
+
+    if balance_total > 0:
+        perdida_pct = abs(min(0, estadisticas_dia.get("pnl", 0))) / balance_total
+        if estadisticas_dia.get("pnl", 0) < 0 and perdida_pct >= PERDIDA_DIARIA_MAX_PCT:
+            BOT_PAUSADO = True
+            return False
+
+    return True
+
+
+def score_calidad_minimo(simbolo: str, analisis: dict) -> float:
+    perfil = perfil_simbolo(simbolo)
+    if analisis.get("modo_contra") or analisis.get("modo_scalping_m5"):
+        return SCORE_CALIDAD_MIN_CONTRA
+    if perfil in ("EXIGENTE", "CUIDADO"):
+        return SCORE_CALIDAD_MIN_EXIGENTE
+    return SCORE_CALIDAD_MIN
+
+
+def cumple_score_calidad(simbolo: str, analisis: dict) -> bool:
+    calidad = float(analisis.get("score_calidad", 0) or 0)
+    if calidad <= 0:
+        score_modelo = float(analisis.get("score", 0))
+        score_ensemble = float(analisis.get("score_ensemble", 0) or 0)
+        votos = int(analisis.get("votos_decision", 0) or 1)
+        calidad = (score_modelo * 0.5) + ((score_ensemble / max(1, votos)) * 0.5)
+
+    minimo = score_calidad_minimo(simbolo, analisis)
+    if calidad < minimo:
+        log_activo(simbolo, f"❌ Calidad {calidad:.2f} < mínimo {minimo:.2f}", True, "error")
+        return False
+    return True
 
 # ======================================
 # MICROTENDENCIA
@@ -728,6 +896,13 @@ def revisar_cierres():
                 direccion = info.get("direccion", "N/A")
                 tp_objetivo = info.get("tp", 0)
 
+                if precio_entrada <= 0 or direccion in ("N/A", "", None):
+                    direccion_rec, precio_rec = recuperar_datos_entrada(simbolo)
+                    if precio_entrada <= 0 and precio_rec > 0:
+                        precio_entrada = precio_rec
+                    if direccion in ("N/A", "", None) and direccion_rec != "N/A":
+                        direccion = direccion_rec
+
                 # Determinar si fue TP o SL
                 # Si el PnL es positivo, asumimos TP (o BE). 
                 # Si el precio de salida está cerca del TP guardado, es TP.
@@ -742,6 +917,7 @@ def revisar_cierres():
 
                 # 5. Guardar en Bitácora
                 guardar_en_bitacora(simbolo, direccion, precio_entrada, precio_salida, pnl_realizado)
+                registrar_resultado_operacion(simbolo, pnl_realizado)
 
                 # 6. Notificar (IMAGEN + SONIDO)
                 TELEGRAM_CHANNEL_ID = '-1003793634988'
@@ -979,6 +1155,21 @@ def validacion_final(simbolo, resultado, df_h1, df_m15):
             return False
 
     # ==============================
+    # 3️⃣ FILTRO ADX MÍNIMO
+    # ==============================
+
+    try:
+        adx_actual = float(resultado.get("adx_actual", 0) or 0)
+        if adx_actual <= 0 and "ADX" in df_m15.columns:
+            adx_actual = float(df_m15["ADX"].iloc[-1])
+
+        if adx_actual < 20 and not resultado.get("modo_oportunidad_controlada"):
+            log_activo(simbolo, f"❌ ADX insuficiente ({adx_actual:.1f} < 20)")
+            return False
+    except Exception as e:
+        print(f"{simbolo} error filtro ADX final: {e}")
+
+    # ==============================
     # 4️⃣ FILTRO SOPORTE / RESISTENCIA
     # ==============================
 
@@ -1196,6 +1387,19 @@ def ejecutar_trade(simbolo, analisis):
 
         cantidad = round(cantidad, precision)
         notional = cantidad * precio
+
+        # Limitar tamaño al riesgo real contra el SL
+        riesgo_max_usdt = balance_total * perfil_inversion["riesgo_real_pct"]
+        cantidad_max_riesgo = riesgo_max_usdt / distancia_sl_precio
+        if cantidad > cantidad_max_riesgo:
+            cantidad = round(cantidad_max_riesgo, precision)
+            notional = cantidad * precio
+            log_activo(
+                simbolo,
+                f"🛡️ Tamaño ajustado por riesgo SL máx "
+                f"{perfil_inversion['riesgo_real_pct']*100:.2f}% (${riesgo_max_usdt:.2f})"
+            )
+
         margen_usar = notional / leverage
         riesgo_usdt_estimado = cantidad * distancia_sl_precio
         riesgo_estimado_pct = (riesgo_usdt_estimado / balance_total) if balance_total > 0 else 0
@@ -1401,6 +1605,11 @@ def loop_principal():
 
             cargar_estado()
             actualizar_balance()
+
+            if not puede_operar_globalmente():
+                time.sleep(30)
+                continue
+
             revisar_cierres()
             sincronizar_con_binance()
             revisar_break_even()
@@ -1456,6 +1665,10 @@ def loop_principal():
                 if simbolo in trades_activos:
                     print("\n----------------------------------------")  
                     log_activo(simbolo, "✅ YA EN TRADE", True)
+                    print()
+                    continue
+
+                if simbolo_en_cooldown(simbolo):
                     print()
                     continue
 
@@ -1565,11 +1778,15 @@ def loop_principal():
                     df_btc
                 )
 
-                if resultado.get("accion") not in ["LONG", "SHORT"]:
+                if resultado.get("accion") not in ["LONG", "SHORT"] and IMPULSO_M5_ACTIVO:
                     resultado = detectar_impulso_m5(simbolo, df_h1, df_m15, df_m5)
 
                 if resultado.get("accion") not in ["LONG", "SHORT"]:
                     log_activo(simbolo, "⏳ ESPERAR")
+                    print()
+                    continue
+
+                if not cumple_score_calidad(simbolo, resultado):
                     print()
                     continue
 
@@ -1679,8 +1896,8 @@ def loop_principal():
                     ]
                     score_suficiente = resultado.get("score", 0) >= 1.0
                     confluencia_fuerte = (
-                        resultado.get("score_ensemble", 0) >= 1.8
-                        and resultado.get("votos_decision", 0) >= 2
+                        resultado.get("score_ensemble", 0) >= 2.2
+                        and resultado.get("votos_decision", 0) >= 3
                     )
                     gatillo_m5_ok = resultado.get("gatillo_m5_ok", False)
                     motivos_texto = " ".join(resultado.get("motivos", [])).lower()
@@ -1917,9 +2134,11 @@ def pause(message):
 
 @bot.message_handler(commands=['resume'])
 def resume(message):
-    global BOT_PAUSADO
+    global BOT_PAUSADO, estadisticas_dia
     BOT_PAUSADO = False
-    bot.reply_to(message, "▶️ Bot reanudado.")
+    estadisticas_dia["sl_consecutivos"] = 0
+    guardar_estado()
+    bot.reply_to(message, "▶️ Bot reanudado. Contador de SL consecutivos reiniciado.")
 
 @bot.message_handler(commands=['risk'])
 def cambiar_riesgo(message):
