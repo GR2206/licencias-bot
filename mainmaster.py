@@ -142,12 +142,15 @@ def perfil_simbolo(simbolo: str):
 
 
 def calcular_perfil_inversion(simbolo: str, analisis: dict):
-    """Define margen máximo y riesgo real según score/confluencia."""
+    """Define margen máximo y riesgo real según calidad real del setup."""
 
-    score = float(analisis.get("score", 0.85))
+    score_modelo = float(analisis.get("score", 0.85))
     score_ensemble = float(analisis.get("score_ensemble", 0) or 0)
     votos = int(analisis.get("votos_decision", 0) or 0)
-    score_ref = max(score, score_ensemble)
+    score_por_voto = score_ensemble / max(1, votos)
+    score_ref = float(analisis.get("score_calidad", 0) or 0)
+    if score_ref <= 0:
+        score_ref = round((score_modelo * 0.5) + (score_por_voto * 0.5), 4)
     perfil_activo = perfil_simbolo(simbolo)
 
     if analisis.get("modo_oportunidad_controlada"):
@@ -199,10 +202,10 @@ def calcular_perfil_inversion(simbolo: str, analisis: dict):
     if score_ref < 1.50:
         return perfil("BAJO_8", 0.08, 0.008)
 
-    if score_ref >= 4.0 and votos >= 5 and positivos >= 4:
+    if score_ref >= 2.20 and votos >= 4 and positivos >= 4:
         return perfil("ELITE_15", 0.15, RIESGO_REAL_MAXIMO)
 
-    if score_ref >= 2.60 and votos >= 3 and positivos >= 3:
+    if score_ref >= 1.60 and votos >= 3 and positivos >= 3:
         return perfil("ALTO_12", 0.12, 0.012)
 
     return perfil("NORMAL_10", 0.10, RIESGO_REAL_BASE)
@@ -469,49 +472,60 @@ def validar_gatillo_m5(simbolo, accion, df_h1, df_m5, resultado):
         vol_media = volume.rolling(20).mean().iloc[-1]
 
         triggers = []
+        fuertes = []
 
         if accion == "LONG":
             if ema9.iloc[-1] > ema21.iloc[-1]:
                 triggers.append("EMA M5 alcista")
             if close.iloc[-1] > df_m5["high"].iloc[-2]:
                 triggers.append("ruptura M5")
+                fuertes.append("ruptura M5")
             if rsi.iloc[-1] > rsi.iloc[-2] and rsi.iloc[-1] > 45:
                 triggers.append("RSI M5 girando")
             if macd_hist.iloc[-1] > macd_hist.iloc[-2]:
                 triggers.append("MACD M5 mejora")
-            if vela["close"] > vela["open"]:
-                triggers.append("vela M5 verde")
+            if (
+                ema9.iloc[-1] > ema21.iloc[-1]
+                and macd_hist.iloc[-1] > macd_hist.iloc[-2]
+            ):
+                fuertes.append("EMA+MACD M5")
 
         elif accion == "SHORT":
             if ema9.iloc[-1] < ema21.iloc[-1]:
                 triggers.append("EMA M5 bajista")
             if close.iloc[-1] < df_m5["low"].iloc[-2]:
                 triggers.append("ruptura M5")
+                fuertes.append("ruptura M5")
             if rsi.iloc[-1] < rsi.iloc[-2] and rsi.iloc[-1] < 55:
                 triggers.append("RSI M5 girando")
             if macd_hist.iloc[-1] < macd_hist.iloc[-2]:
                 triggers.append("MACD M5 mejora")
-            if vela["close"] < vela["open"]:
-                triggers.append("vela M5 roja")
+            if (
+                ema9.iloc[-1] < ema21.iloc[-1]
+                and macd_hist.iloc[-1] < macd_hist.iloc[-2]
+            ):
+                fuertes.append("EMA+MACD M5")
 
-        if volume.iloc[-1] > vol_media * 0.8:
+        if volume.iloc[-1] > vol_media:
             triggers.append("volumen M5 ok")
 
-        score_ensemble = resultado.get("score_ensemble", 0)
-        votos = resultado.get("votos_decision", 0)
-        requeridos = 2 if score_ensemble >= 2.4 or votos >= 3 else 3
-
-        if len(triggers) >= requeridos:
-            resultado["gatillo_m5_ok"] = True
+        requeridos = 3
+        if len(triggers) < requeridos or not fuertes:
+            resultado["gatillo_m5_ok"] = False
             resultado["gatillo_m5"] = triggers
-            return True, " + ".join(triggers[:4])
+            detalle = "sin gatillo fuerte" if not fuertes else f"{len(triggers)}/{requeridos}"
+            return False, f"M5 insuficiente ({detalle})"
 
-        resultado["gatillo_m5_ok"] = False
+        resultado["gatillo_m5_ok"] = True
         resultado["gatillo_m5"] = triggers
-        return False, f"M5 sin gatillo suficiente ({len(triggers)}/{requeridos})"
+        return True, " + ".join(triggers[:4])
 
     except Exception as e:
         return False, f"Error gatillo M5: {e}"
+
+
+IMPULSO_M5_RR = 2.5
+IMPULSO_M5_TRIGGERS_MIN = 5
 
 
 def detectar_impulso_m5(simbolo, df_h1, df_m15, df_m5):
@@ -568,7 +582,7 @@ def detectar_impulso_m5(simbolo, df_h1, df_m15, df_m5):
             if dist < min_dist:
                 sl = precio + min_dist
                 dist = min_dist
-            tp = precio - dist * 1.7
+            tp = precio - dist * IMPULSO_M5_RR
 
         else:
             if ema9.iloc[-1] > ema21.iloc[-1]:
@@ -592,7 +606,7 @@ def detectar_impulso_m5(simbolo, df_h1, df_m15, df_m5):
             if dist < min_dist:
                 sl = precio - min_dist
                 dist = min_dist
-            tp = precio + dist * 1.7
+            tp = precio + dist * IMPULSO_M5_RR
 
         if volume.iloc[-1] > vol_media:
             triggers.append("volumen M5")
@@ -602,22 +616,27 @@ def detectar_impulso_m5(simbolo, df_h1, df_m15, df_m5):
             log_activo(simbolo, f"⏳ Impulso M5 sin entrada: SL {distancia_sl*100:.2f}%")
             return {"accion": "ESPERAR"}
 
-        if len(triggers) < 4:
+        if len(triggers) < IMPULSO_M5_TRIGGERS_MIN:
             return {"accion": "ESPERAR"}
+
+        score_modelo = round(0.55 + len(triggers) * 0.08, 2)
+        score_ensemble = round(score_modelo + 0.35, 2)
+        score_calidad = round((score_modelo * 0.5) + (score_ensemble / max(1, len(triggers)) * 0.5), 2)
 
         log_activo(simbolo, f"⚡ Impulso M5 {accion}: {' + '.join(triggers[:4])}")
 
         return {
             "modelo": "IMPULSO_M5",
             "accion": accion,
-            "score": round(1.2 + len(triggers) * 0.25, 2),
-            "score_ensemble": round(1.8 + len(triggers) * 0.25, 2),
+            "score": score_modelo,
+            "score_ensemble": score_ensemble,
+            "score_calidad": score_calidad,
             "votos_decision": min(len(triggers), 5),
             "precio": precio,
             "sl_precio": sl,
             "tp_precio": tp,
             "distancia_sl_pct": round(distancia_sl * 100, 3),
-            "rr_objetivo": 1.7,
+            "rr_objetivo": IMPULSO_M5_RR,
             "modo_scalping_m5": True,
             "gatillo_m5_ok": True,
             "gatillo_m5": triggers,
@@ -764,9 +783,9 @@ def revisar_cierres():
 
 def revisar_break_even():
     """
-    Nivel 1 → ROI 30% (apalancado): SL sube a precio de entrada exacto
-    Nivel 2 → ROI 40% (apalancado): SL sube a entrada + 0.20% (trade gratis)
-    
+    Nivel 1 → 35% del camino al TP: SL sube a precio de entrada exacto
+    Nivel 2 → 55% del camino al TP: SL sube a entrada + 0.20% (trade gratis)
+
     Usa be_nivel en trades_info: 0=sin activar, 1=BE entrada, 2=BE+0.20%
     """
     try:
@@ -793,19 +812,26 @@ def revisar_break_even():
                 continue
 
             entry         = float(pos['entryPrice'])
-            pnl           = float(pos['unRealizedProfit'])
-            margen        = float(pos['positionInitialMargin'])
             direccion     = info["direccion"]
             precio_actual = float(pos['markPrice'])
+            tp_objetivo   = float(info.get("tp") or 0)
 
-            if margen == 0:
+            if tp_objetivo <= 0:
                 continue
 
-            # ROI sobre el margen (apalancado)
-            roi = (pnl / margen) * 100
+            distancia_tp = abs(tp_objetivo - entry)
+            if distancia_tp <= 0:
+                continue
 
-            # ── NIVEL 1: ROI ≥ 30% → SL a entrada exacta ──────────────
-            if be_nivel < 1 and roi >= 30.0:
+            if direccion == "LONG":
+                progreso_tp = (precio_actual - entry) / distancia_tp
+            else:
+                progreso_tp = (entry - precio_actual) / distancia_tp
+
+            progreso_tp = max(0.0, min(progreso_tp, 1.5))
+
+            # ── NIVEL 1: 35% hacia TP → SL a entrada exacta ──────────────
+            if be_nivel < 1 and progreso_tp >= 0.35:
 
                 nuevo_sl = entry   # exactamente en entrada
                 side     = SIDE_SELL if direccion == "LONG" else SIDE_BUY
@@ -837,20 +863,20 @@ def revisar_break_even():
 
                     trades_info[simbolo]["be_nivel"] = 1
                     guardar_estado()
-                    log_activo(simbolo, f"🔒 BE Nivel 1 activado (ROI {roi:.1f}%) → SL en entrada")
+                    log_activo(simbolo, f"🔒 BE Nivel 1 activado ({progreso_tp*100:.0f}% hacia TP) → SL en entrada")
 
                     enviar_senal_canal(
                         f"🔒 <b>BREAK EVEN ACTIVADO</b>\n\n"
                         f"📊 {simbolo}\n"
-                        f"📈 ROI: {roi:.1f}%\n"
+                        f"📈 Progreso TP: {progreso_tp*100:.0f}%\n"
                         f"🛑 SL movido a entrada: {nuevo_sl:.4f}\n"
                         f"<i>Trade ahora en zona segura</i>"
                     )
                 except Exception as e:
                     print(f"Error BE Nivel 1 {simbolo}: {e}")
 
-            # ── NIVEL 2: ROI ≥ 40% → SL a entrada + 0.20% ────────────
-            elif be_nivel == 1 and roi >= 40.0:
+            # ── NIVEL 2: 55% hacia TP → SL a entrada + 0.20% ────────────
+            elif be_nivel == 1 and progreso_tp >= 0.55:
 
                 buffer_pct = 0.002   # 0.20% de ganancia protegida en precio
                 if direccion == "LONG":
@@ -887,12 +913,12 @@ def revisar_break_even():
 
                     trades_info[simbolo]["be_nivel"] = 2
                     guardar_estado()
-                    log_activo(simbolo, f"🔐 BE Nivel 2 activado (ROI {roi:.1f}%) → SL +0.20% protegido")
+                    log_activo(simbolo, f"🔐 BE Nivel 2 activado ({progreso_tp*100:.0f}% hacia TP) → SL +0.20% protegido")
 
                     enviar_senal_canal(
                         f"🔐 <b>BREAK EVEN NIVEL 2</b>\n\n"
                         f"📊 {simbolo}\n"
-                        f"📈 ROI: {roi:.1f}%\n"
+                        f"📈 Progreso TP: {progreso_tp*100:.0f}%\n"
                         f"✅ SL con ganancia protegida: {nuevo_sl:.4f}\n"
                         f"<i>Trade sale en ganancia garantizada</i>"
                     )
@@ -1568,45 +1594,44 @@ def loop_principal():
                 elif macro == "ALCISTA":
 
                     if micro == "BAJISTA_MICRO":
-                        # Corrección en tendencia alcista → permitir LONG si score es alto
                         if resultado["accion"] == "SHORT":
-                            log_activo(simbolo, "🔻 Corrección BTC → SHORT SCALP")
+                            log_activo(simbolo, "🔻 Corrección BTC → SHORT permitido")
                             modo_contra = True
-                        elif resultado["accion"] == "LONG" and resultado.get("score", 0) >= 1.4:
-                            log_activo(simbolo, "📉 Compra en corrección BTC (score suficiente)")
-                            # permitir, no hacer continue
+                        elif resultado["accion"] == "LONG" and resultado.get("score_calidad", resultado.get("score", 0)) >= 1.2:
+                            log_activo(simbolo, "📉 Compra en corrección BTC (calidad suficiente)")
                         else:
-                            log_activo(simbolo, "⚠️ Corrección BTC, continúa con riesgo controlado")
-                            modo_contra = True
+                            log_activo(simbolo, "⚠️ Corrección BTC sin calidad → se omite")
+                            continue
 
                     elif micro == "ALCISTA_MICRO":
-                        
                         if resultado["accion"] != "LONG":
-
-                             if resultado.get("score", 0) < 1.8:
-                                  log_activo(simbolo, "⚠️ Contra micro BTC, continúa si filtros finales aprueban")
-                                  modo_contra = True
-                        
+                            calidad = resultado.get("score_calidad", resultado.get("score", 0))
+                            if calidad < 1.5:
+                                log_activo(simbolo, "⚠️ Contra micro BTC sin calidad → se omite")
+                                continue
+                            modo_contra = True
 
                 # 🎯 BTC BAJISTA
                 elif macro == "BAJISTA":
 
                     if micro == "ALCISTA_MICRO":
-
                         if resultado["accion"] == "LONG":
-                            log_activo(simbolo, "🔺 Corrección BTC → LONG SCALP")
+                            log_activo(simbolo, "🔺 Corrección BTC → LONG permitido")
                             modo_contra = True
                         else:
-                            log_activo(simbolo, "⚠️ Contra corrección BTC, continúa con riesgo controlado")
+                            calidad = resultado.get("score_calidad", resultado.get("score", 0))
+                            if calidad < 1.5:
+                                log_activo(simbolo, "⚠️ Contra corrección BTC sin calidad → se omite")
+                                continue
                             modo_contra = True
 
                     elif micro == "BAJISTA_MICRO":
-
-                        
                         if resultado["accion"] != "SHORT":
-                             if resultado.get("score", 0) < 1.8:
-                                  log_activo(simbolo, "⚠️ Contra micro BTC, continúa si filtros finales aprueban")
-                                  modo_contra = True
+                            calidad = resultado.get("score_calidad", resultado.get("score", 0))
+                            if calidad < 1.5:
+                                log_activo(simbolo, "⚠️ Contra micro BTC sin calidad → se omite")
+                                continue
+                            modo_contra = True
 
                 resultado["modo_contra"] = modo_contra
 

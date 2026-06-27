@@ -68,9 +68,9 @@ SCORE_BASE = 0.8
 # CONFIGURACIÓN DEL SISTEMA
 # ===============================
 
-RR_MINIMO = 1.5
-RR_NORMAL = 2.2
-RR_SCALP = 1.7
+RR_MINIMO = 2.0
+RR_NORMAL = 3.0       # 1 TP recupera 3 SL
+RR_SCALP = 2.5        # correcciones: mínimo 1 TP = 2.5 SL
 ATR_MULTIPLICADOR_SL = 2.2
 SL_MINIMO_PCT = 0.006
 SL_MAXIMO_PCT = 0.025
@@ -78,7 +78,10 @@ RIESGO_MAXIMO_PCT = 0.02
 OPORTUNIDAD_SCORE_MIN = 2.6
 OPORTUNIDAD_VOTOS_MIN = 3
 OPORTUNIDAD_SL_MAX_PCT = 0.018
-OPORTUNIDAD_RR = 2.5
+OPORTUNIDAD_RR = 3.0
+ENSEMBLE_SCORE_MIN = 1.80
+ENSEMBLE_VOTOS_MIN = 3
+MODELO_SCORE_MIN = 0.75
 
 SIMBOLOS_PREFERENTES = {
     "CHZUSDT",
@@ -1290,33 +1293,46 @@ def combinar_modelos(simbolo, resultados, df_h1):
     if not validos:
         return {"accion": "ESPERAR"}
 
-    # matriz de scores
     score_long = 0
     score_short = 0
 
     for r in validos:
-
         if r["accion"] == "LONG":
             score_long += r["score"]
-
         if r["accion"] == "SHORT":
             score_short += r["score"]
 
-    # ── FILTRO CONFLUENCIA MÍNIMA ──────────────────
     votos_long = sum(1 for r in validos if r["accion"] == "LONG")
     votos_short = sum(1 for r in validos if r["accion"] == "SHORT")
 
-    if score_long > score_short and score_long > 1.35:        
-        candidatos = [r for r in validos if r["accion"] == "LONG"]
+    def _elegir(candidatos, score_total, votos, direccion):
+        if score_total <= ENSEMBLE_SCORE_MIN:
+            return None
+        if votos < ENSEMBLE_VOTOS_MIN:
+            log_activo(simbolo, f"❌ Ensemble {direccion}: votos insuficientes ({votos}/{ENSEMBLE_VOTOS_MIN})")
+            return None
         mejor = max(candidatos, key=lambda x: x["score"])
-        log_activo(simbolo, f"🧠 Ensemble LONG | Score {round(score_long,3)} | Votos {votos_long}")
+        if mejor["score"] < MODELO_SCORE_MIN:
+            log_activo(simbolo, f"❌ Ensemble {direccion}: modelo ancla débil ({mejor['score']:.2f} < {MODELO_SCORE_MIN})")
+            return None
+        score_por_voto = score_total / max(1, votos)
+        mejor["score_ensemble"] = round(score_total, 4)
+        mejor["votos_decision"] = votos
+        mejor["score_calidad"] = round((mejor["score"] * 0.5) + (score_por_voto * 0.5), 4)
+        log_activo(simbolo, f"🧠 Ensemble {direccion} | Score {round(score_total,3)} | Votos {votos} | Calidad {mejor['score_calidad']:.2f}")
         return mejor
 
-    if score_short > score_long and score_short > 1.35:
+    if score_long > score_short:
+        candidatos = [r for r in validos if r["accion"] == "LONG"]
+        elegido = _elegir(candidatos, score_long, votos_long, "LONG")
+        if elegido:
+            return elegido
+
+    if score_short > score_long:
         candidatos = [r for r in validos if r["accion"] == "SHORT"]
-        mejor = max(candidatos, key=lambda x: x["score"])
-        log_activo(simbolo, f"🧠 Ensemble SHORT | Score {round(score_short,3)} | Votos {votos_short}")
-        return mejor
+        elegido = _elegir(candidatos, score_short, votos_short, "SHORT")
+        if elegido:
+            return elegido
 
     return {"accion": "ESPERAR"}
 
@@ -1445,13 +1461,20 @@ def analizar(simbolo, df_h1, estado_mercado, df_m15, df_btc):
         # =============================
 
         accion_decision = decision.get("accion")
-        score_ensemble, votos_decision = score_y_votos(
-            resultados_filtrados,
-            accion_decision
-        )
-
-        decision["score_ensemble"] = round(score_ensemble, 4)
-        decision["votos_decision"] = votos_decision
+        if "score_ensemble" not in decision:
+            score_ensemble, votos_decision = score_y_votos(
+                resultados_filtrados,
+                accion_decision
+            )
+            decision["score_ensemble"] = round(score_ensemble, 4)
+            decision["votos_decision"] = votos_decision
+            score_por_voto = score_ensemble / max(1, votos_decision)
+            decision["score_calidad"] = round(
+                (decision.get("score", 0) * 0.5) + (score_por_voto * 0.5),
+                4
+            )
+        score_ensemble = decision["score_ensemble"]
+        votos_decision = decision["votos_decision"]
         perfil_activo = perfil_simbolo(simbolo)
         decision["perfil_simbolo"] = perfil_activo
 
@@ -1596,9 +1619,11 @@ def analizar(simbolo, df_h1, estado_mercado, df_m15, df_btc):
             decision["adx_actual"] = round(float(adx_actual), 2)
 
             if (
-                adx_actual < 18
-                and score_ensemble < 1.5
-                and votos_decision < 2
+                adx_actual < 20
+                and (
+                    score_ensemble < 2.2
+                    or votos_decision < ENSEMBLE_VOTOS_MIN
+                )
             ):
 
                 log_activo(
@@ -1761,17 +1786,20 @@ def analizar(simbolo, df_h1, estado_mercado, df_m15, df_btc):
         if decision.get("modo_oportunidad_controlada"):
 
             rr = decision.get("rr_objetivo", OPORTUNIDAD_RR)
-            log_activo(simbolo, "🎯 Oportunidad controlada (RR 1:2.5)")
+            log_activo(simbolo, f"🎯 Oportunidad controlada (RR 1:{OPORTUNIDAD_RR})")
 
         elif decision.get("modo_contra"):
 
             rr = RR_SCALP
-            log_activo(simbolo, "🎯 Trade de CORRECCIÓN (TP corto)")
+            log_activo(simbolo, f"🎯 Trade de CORRECCIÓN (RR 1:{RR_SCALP})")
 
         else:
 
             rr = RR_NORMAL
-            log_activo(simbolo, "📈 Trade de TENDENCIA")
+            log_activo(simbolo, f"📈 Trade de TENDENCIA (RR 1:{RR_NORMAL})")
+
+        rr = max(rr, RR_MINIMO)
+        decision["rr_objetivo"] = rr
 
         dist = abs(precio_actual - sl)
 
@@ -1779,6 +1807,11 @@ def analizar(simbolo, df_h1, estado_mercado, df_m15, df_btc):
             tp = precio_actual + dist * rr
         else:
             tp = precio_actual - dist * rr
+
+        rr_efectivo = abs(tp - precio_actual) / max(dist, 1e-12)
+        if rr_efectivo < RR_MINIMO:
+            log_activo(simbolo, f"❌ RR efectivo insuficiente ({rr_efectivo:.2f} < {RR_MINIMO})")
+            return {"accion": "ESPERAR"}
 
 
         if "patrones_vela" not in decision:
