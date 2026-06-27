@@ -243,6 +243,71 @@ client._timestamp_offset = client.get_server_time()['serverTime'] - int(time.tim
 
 client = Client(config.BINANCE_API_KEY, config.BINANCE_API_SECRET)
 
+# ======================================
+# VALIDACIÓN DE SÍMBOLOS FUTURES
+# ======================================
+
+SIMBOLO_ALIASES = {
+    "100PEPEUSDT": "1000PEPEUSDT",
+    "PEPEUSDT": "1000PEPEUSDT",
+    "100SHIBUSDT": "1000SHIBUSDT",
+    "SHIBUSDT": "1000SHIBUSDT",
+    "100FLOKIUSDT": "1000FLOKIUSDT",
+    "FLOKIUSDT": "1000FLOKIUSDT",
+    "100LUNCUSDT": "1000LUNCUSDT",
+}
+
+_simbolos_futures_cache = None
+
+
+def _cargar_simbolos_futures():
+    global _simbolos_futures_cache
+    if _simbolos_futures_cache is not None:
+        return _simbolos_futures_cache
+    try:
+        info = client.futures_exchange_info()
+        _simbolos_futures_cache = {
+            s["symbol"]
+            for s in info.get("symbols", [])
+            if s.get("status") == "TRADING" and s.get("contractType") == "PERPETUAL"
+        }
+    except Exception as e:
+        print(f"⚠️ No se pudo cargar lista de símbolos futures: {e}")
+        _simbolos_futures_cache = set()
+    return _simbolos_futures_cache
+
+
+def normalizar_simbolo(simbolo: str) -> str:
+    simbolo = str(simbolo).upper().strip()
+    return SIMBOLO_ALIASES.get(simbolo, simbolo)
+
+
+def simbolo_valido_futures(simbolo: str) -> bool:
+    simbolo = normalizar_simbolo(simbolo)
+    validos = _cargar_simbolos_futures()
+    if not validos:
+        return True
+    return simbolo in validos
+
+
+def iterar_favoritos_validos():
+    vistos = set()
+    for raw in config.FAVORITOS:
+        simbolo = normalizar_simbolo(raw)
+        if simbolo in vistos:
+            continue
+        vistos.add(simbolo)
+
+        if raw != simbolo:
+            print(f"ℹ️ Símbolo corregido: {raw} → {simbolo}")
+
+        if not simbolo_valido_futures(simbolo):
+            print(f"⚠️ Símbolo omitido (no existe en futures): {raw} → probado como {simbolo}")
+            continue
+
+        yield simbolo
+
+
 def obtener_datos(simbolo, intervalo, limite=200):
 
     klines = client.get_klines(
@@ -1660,7 +1725,7 @@ def loop_principal():
 
             # ===== RECORRER FAVORITOS =====
 
-            for simbolo in config.FAVORITOS:
+            for simbolo in iterar_favoritos_validos():
 
                 if simbolo in trades_activos:
                     print("\n----------------------------------------")  
