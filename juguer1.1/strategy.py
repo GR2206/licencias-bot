@@ -37,11 +37,33 @@ class Signal:
     reasons: list[str]
 
 
+def _bbands(close: pd.Series, length: int = 20, std_mult: float = 2.0) -> tuple[float, float]:
+    """Bollinger inferior/superior — sin depender del nombre de columnas de pandas_ta."""
+    mid = close.rolling(length).mean()
+    std = close.rolling(length).std()
+    lower = mid - std_mult * std
+    upper = mid + std_mult * std
+    bbl = float(lower.iloc[-1])
+    bbu = float(upper.iloc[-1])
+    if pd.isna(bbl) or pd.isna(bbu):
+        raise ValueError("Bollinger no disponible (datos insuficientes)")
+    return bbl, bbu
+
+
+def _adx_value(df: pd.DataFrame, length: int = 14) -> float:
+    adx_df = ta.adx(df["high"], df["low"], df["close"], length=length)
+    if adx_df is None or adx_df.empty:
+        return 0.0
+    col = next((c for c in adx_df.columns if str(c).upper().startswith("ADX")), None)
+    if col is None:
+        return float(adx_df.iloc[-1, 0])
+    return float(adx_df[col].iloc[-1])
+
+
 def _trend_15m(df: pd.DataFrame) -> tuple[str, float]:
     ema20 = ta.ema(df["close"], length=20)
     ema50 = ta.ema(df["close"], length=50)
-    adx_df = ta.adx(df["high"], df["low"], df["close"], length=14)
-    adx = float(adx_df["ADX_14"].iloc[-1])
+    adx = _adx_value(df)
 
     if ema20.iloc[-1] > ema50.iloc[-1] and adx >= 22:
         return "UP", adx
@@ -80,7 +102,6 @@ def analyze(df_5m: pd.DataFrame, df_15m: pd.DataFrame) -> Optional[Signal]:
     rsi = ta.rsi(close, length=14)
     ema9 = ta.ema(close, length=9)
     ema21 = ta.ema(close, length=21)
-    bb = ta.bbands(close, length=20, std=2)
     atr = ta.atr(high, low, close, length=14)
     vol_ma = df_5m["volume"].rolling(20).mean()
 
@@ -89,8 +110,7 @@ def analyze(df_5m: pd.DataFrame, df_15m: pd.DataFrame) -> Optional[Signal]:
 
     rsi_now = float(rsi.iloc[-1])
     rsi_prev = float(rsi.iloc[-2])
-    bbl = float(bb["BBL_20_2.0"].iloc[-1])
-    bbu = float(bb["BBU_20_2.0"].iloc[-1])
+    bbl, bbu = _bbands(close)
     vol_ok = float(df_5m["volume"].iloc[-1]) > float(vol_ma.iloc[-1]) * 0.9
 
     reasons: list[str] = []
