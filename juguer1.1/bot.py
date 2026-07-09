@@ -20,6 +20,7 @@ from risk import can_trade, position_size, register_close, reset_day_if_needed
 from state import load_state, save_state
 from strategy import analyze
 from telegram_ctl import start_telegram
+from telegram_util import send_message
 
 logging.basicConfig(
     level=logging.INFO,
@@ -30,12 +31,8 @@ log = logging.getLogger("juguer")
 
 
 def notify(msg: str):
-    try:
-        import telebot
-        bot = telebot.TeleBot(config.TELEGRAM_TOKEN)
-        bot.send_message(config.TELEGRAM_CHAT_ID, msg, parse_mode="HTML")
-    except Exception as e:
-        log.warning("Telegram notify: %s", e)
+    if not send_message(msg):
+        log.warning("No se pudo enviar a Telegram (el bot sigue operando)")
 
 
 def check_closed(exchange: Exchange, state):
@@ -140,7 +137,10 @@ def main():
     start_telegram(exchange, lambda: state)
 
     log.info("Juguer 1.1 iniciado | símbolos: %s | testnet: %s", config.SYMBOLS, config.TESTNET)
-    notify("🍊 <b>Juguer 1.1</b> en línea.")
+    if send_message("🍊 <b>Juguer 1.1</b> en línea — Binance real"):
+        log.info("Telegram conectado")
+    else:
+        log.warning("Telegram no disponible — trading activo igual")
 
     while True:
         try:

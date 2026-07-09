@@ -16,12 +16,21 @@ def main():
         sys.exit(1)
 
     ok = True
+    telegram_optional = getattr(config, "TELEGRAM_OPTIONAL", True)
+    telegram_disabled = getattr(config, "TELEGRAM_DISABLED", False)
 
-    for name in ("BINANCE_API_KEY", "BINANCE_API_SECRET", "TELEGRAM_TOKEN", "TELEGRAM_CHAT_ID"):
+    for name in ("BINANCE_API_KEY", "BINANCE_API_SECRET"):
         val = str(getattr(config, name, ""))
         if not val or any(p in val.lower() for p in PLACEHOLDERS):
             print(f"❌ {name} no configurado")
             ok = False
+
+    if not telegram_disabled:
+        for name in ("TELEGRAM_TOKEN", "TELEGRAM_CHAT_ID"):
+            val = str(getattr(config, name, ""))
+            if not val or any(p in val.lower() for p in PLACEHOLDERS):
+                print(f"❌ {name} no configurado")
+                ok = False
 
     if getattr(config, "TESTNET", True):
         print("⚠️  TESTNET = True — cambiá a False para Binance real")
@@ -51,21 +60,32 @@ def main():
         print("   Revisá: API con permiso Futures, IP whitelist, keys correctas")
         sys.exit(1)
 
-    print("🔔 Probando Telegram...")
-    try:
-        import telebot
-        bot = telebot.TeleBot(config.TELEGRAM_TOKEN)
-        bot.send_message(
-            config.TELEGRAM_CHAT_ID,
-            "🍊 Juguer 1.1 — check OK. Listo para <code>python bot.py</code>",
-            parse_mode="HTML",
-        )
-        print("✅ Telegram OK")
-    except Exception as e:
-        print(f"❌ Telegram: {e}")
-        sys.exit(1)
+    if telegram_disabled:
+        print("ℹ️  Telegram desactivado (TELEGRAM_DISABLED=True)")
+        print("\n🟢 BINANCE LISTO — ejecutá: python bot.py")
+        return
 
-    print("\n🟢 TODO LISTO — ejecutá: python bot.py")
+    print("🔔 Probando Telegram (hasta 5 reintentos)...")
+    from telegram_util import test_connection
+    tg_ok, tg_msg = test_connection(retries=5)
+
+    if tg_ok:
+        print(f"✅ {tg_msg}")
+        print("\n🟢 TODO LISTO — ejecutá: python bot.py")
+        return
+
+    print(f"⚠️  {tg_msg}")
+
+    if telegram_optional:
+        print("\n🟡 BINANCE OK — podés arrancar sin Telegram:")
+        print("   python bot.py")
+        print("\n   Para arreglar Telegram después:")
+        print("   • Probá con datos móviles o VPN")
+        print("   • TELEGRAM_PROXY = 'socks5://127.0.0.1:1080' en config.py")
+        return
+
+    print("\n❌ Telegram obligatorio y no conecta. No arranques hasta resolverlo.")
+    sys.exit(1)
 
 
 if __name__ == "__main__":

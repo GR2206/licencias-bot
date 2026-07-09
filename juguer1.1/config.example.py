@@ -3,9 +3,12 @@
 BINANCE_API_KEY = "tu_api_key"
 BINANCE_API_SECRET = "tu_api_secret"
 
-# Telegram (control desde el celular sin depender de la pantalla)
+# Telegram (control desde el celular)
 TELEGRAM_TOKEN = "tu_token_botfather"
 TELEGRAM_CHAT_ID = "tu_chat_id"
+TELEGRAM_OPTIONAL = True   # True = arranca aunque Telegram falle
+TELEGRAM_DISABLED = False  # True = sin Telegram (solo consola)
+TELEGRAM_PROXY = ""        # ej: "socks5://127.0.0.1:1080" si tu red bloquea Telegram
 
 # Futures
 LEVERAGE = 5
