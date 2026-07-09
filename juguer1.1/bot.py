@@ -18,7 +18,7 @@ import config
 from exchange import Exchange, _is_transient
 from risk import can_trade, position_size, register_close, reset_day_if_needed
 from state import load_state, save_state
-from strategy import analyze
+from strategy import format_scan, scan
 from telegram_ctl import start_telegram
 from telegram_util import polling_enabled, send_message, silence_telebot_logger
 
@@ -77,10 +77,11 @@ def try_entry(exchange: Exchange, state, symbol: str):
 
     df_5m = exchange.klines(symbol, "5m", 120)
     df_15m = exchange.klines(symbol, "15m", 120)
-    signal = analyze(df_5m, df_15m)
+    report = scan(df_5m, df_15m)
+    log.info("\n%s", format_scan(symbol, report))
+    signal = report.signal
 
     if not signal:
-        log.info("[%s] sin setup", symbol)
         return
 
     balance = exchange.balance_usdt()
