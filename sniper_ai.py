@@ -7,8 +7,9 @@
 #  2. Genera un fingerprint de cada trade (modelo + condiciones)
 #  3. Bloquea patrones con 4+ pérdidas y WR < 35%
 #  4. Amplifica patrones con 4+ ganancias y WR > 65%
-#  5. Puede vetar un trade antes de ejecutar
-#  6. Persiste toda la memoria entre sesiones
+#  5. Puede vetar un trade antes de ejecutar (solo tras 10 SL consecutivos)
+#  6. Aprende de cada SL y retroalimenta score/predicción
+#  7. Persiste toda la memoria entre sesiones
 # ─────────────────────────────────────────────────────────────────────────────
 
 import json
@@ -29,7 +30,10 @@ UMBRAL_BLOQUEO_WR         = 0.35   # WR < 35% con 4+ trades → BLOQUEADO
 UMBRAL_BOOST_WR           = 0.65   # WR > 65% con 4+ trades → BOOST
 BOOST_MULTIPLICADOR       = 1.30   # Multiplica el score en patrones ganadores
 PENALIZACION_MULTIPLICADOR= 0.65   # Reduce score en patrones débiles (sin bloquear)
-RACHA_NEGATIVA_ALERTA     = 3      # 3 SL seguidos → alerta y reducción de score
+RACHA_NEGATIVA_ALERTA     = 3      # SL seguidos → alerta en consola (no bloquea)
+RACHA_NEGATIVA_BLOQUEO    = 10     # 10 SL consecutivos → veto total
+RACHA_PENALIZACION_POR_SL = 0.04   # -4% score por cada SL en racha activa
+MIN_TRADES_SL_RETRO       = 3      # Mínimo de SL para retroalimentar predicción
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -43,6 +47,7 @@ class SniperAI:
         self.estadisticas_activos = {}  # {SIMBOLO|MODELO|ACCION: {wins, losses, pnl}}
         self.historial      = []    # Últimos 200 trades completos
         self.racha_actual   = []    # Últimos resultados para detectar racha negativa
+        self.retroalimentacion_sl = {}  # Aprendizaje por condiciones que llevan a SL
         self.total_wins     = 0
         self.total_losses   = 0
         self._cargar()
@@ -61,7 +66,8 @@ class SniperAI:
             self.patrones     = data.get("patrones", {})
             self.estadisticas_activos = data.get("estadisticas_activos", {})
             self.historial    = data.get("historial", [])[-200:]
-            self.racha_actual = data.get("racha_actual", [])[-10:]
+            self.racha_actual = data.get("racha_actual", [])[-15:]
+            self.retroalimentacion_sl = data.get("retroalimentacion_sl", {})
             self.total_wins   = data.get("total_wins", 0)
             self.total_losses = data.get("total_losses", 0)
 
@@ -86,7 +92,8 @@ class SniperAI:
                     "patrones"     : self.patrones,
                     "estadisticas_activos": self.estadisticas_activos,
                     "historial"    : self.historial[-200:],
-                    "racha_actual" : self.racha_actual[-10:],
+                    "racha_actual" : self.racha_actual[-15:],
+                    "retroalimentacion_sl": self.retroalimentacion_sl,
                     "total_wins"   : self.total_wins,
                     "total_losses" : self.total_losses,
                     "ultima_act"   : datetime.now().strftime("%Y-%m-%d %H:%M"),
@@ -107,6 +114,45 @@ class SniperAI:
         total = wins + losses
         wr = wins / max(1, total)
         return wins, losses, total, wr
+
+    def _contar_racha_negativa(self) -> int:
+        racha = 0
+        for resultado in reversed(self.racha_actual):
+            if resultado == "LOSS":
+                racha += 1
+            else:
+                break
+        return racha
+
+    def _clave_retroalimentacion_sl(self, features: dict) -> str:
+        return "|".join([
+            features.get("modelo", "UNKNOWN"),
+            features.get("regimen", "DESCONOCIDO"),
+            features.get("distancia_sl", "CONTROLADO"),
+            features.get("accion", ""),
+            features.get("sesion", "NY"),
+        ])
+
+    def _modificador_retroalimentacion_sl(self, features: dict) -> tuple:
+        clave = self._clave_retroalimentacion_sl(features)
+        stats = self.retroalimentacion_sl.get(clave)
+        if not stats:
+            return 1.0, ""
+
+        wins = stats.get("wins", 0)
+        losses = stats.get("sl_hits", 0)
+        total = wins + losses
+        if total < MIN_TRADES_SL_RETRO:
+            return 1.0, ""
+
+        sl_rate = losses / total
+        if sl_rate >= 0.70:
+            return 0.80, f"SL_RETRO_ALTO({clave},sl={sl_rate*100:.0f}%)"
+        if sl_rate >= 0.55:
+            return 0.90, f"SL_RETRO_MEDIO({clave},sl={sl_rate*100:.0f}%)"
+        if sl_rate <= 0.35 and total >= MIN_TRADES_SL_RETRO:
+            return 1.08, f"SL_RETRO_FUERTE({clave},sl={sl_rate*100:.0f}%)"
+        return 1.0, ""
 
     def resumen_estadisticas_activos(self, limite: int = 8) -> str:
         if not self.estadisticas_activos:
@@ -354,10 +400,9 @@ class SniperAI:
         vol_creciente = contexto.get("vol_creciente", True)
 
         # ── 1. Racha negativa global ────────────────────────────────────
-        if len(self.racha_actual) >= RACHA_NEGATIVA_ALERTA:
-            ultimos = self.racha_actual[-RACHA_NEGATIVA_ALERTA:]
-            if all(r == "LOSS" for r in ultimos):
-                return False, 0.0, f"RACHA_{RACHA_NEGATIVA_ALERTA}_SL_CONSECUTIVOS"
+        racha_sl = self._contar_racha_negativa()
+        if racha_sl >= RACHA_NEGATIVA_BLOQUEO:
+            return False, 0.0, f"RACHA_{racha_sl}_SL_CONSECUTIVOS"
 
         # ── 2. Patrón bloqueado ─────────────────────────────────────────
         if hash_fp in self.patrones:
@@ -395,6 +440,18 @@ class SniperAI:
 
         # ── 4. Calcular modificador de score ────────────────────────────
         score_mod = 1.0
+        extras_razon = []
+
+        # Retroalimentación por racha: penaliza progresivamente, no bloquea hasta 10
+        if racha_sl >= RACHA_NEGATIVA_ALERTA:
+            penal_racha = max(0.55, 1.0 - (racha_sl * RACHA_PENALIZACION_POR_SL))
+            score_mod *= penal_racha
+            extras_razon.append(f"racha_sl={racha_sl}×{penal_racha:.2f}")
+
+        retro_mod, retro_razon = self._modificador_retroalimentacion_sl(features)
+        if retro_mod != 1.0:
+            score_mod *= retro_mod
+            extras_razon.append(retro_razon)
 
         if stats_activo:
             w, l, total, wr_activo = self._stats_resumen(stats_activo)
@@ -431,6 +488,8 @@ class SniperAI:
         razon = (f"OK|régimen={regimen}|"
                  f"mod_score={score_mod:.2f}|"
                  f"patrón={'nuevo' if hash_fp not in self.patrones else 'conocido'}")
+        if extras_razon:
+            razon += "|" + "|".join(extras_razon)
 
         return True, round(score_mod, 3), razon
 
@@ -496,6 +555,30 @@ class SniperAI:
         stats_activo["ultimo_update"] = datetime.now().strftime("%Y-%m-%d %H:%M")
         _, _, total_activo, wr_activo = self._stats_resumen(stats_activo)
 
+        # ── Retroalimentación SL: aprender de cada stop loss ─────────────
+        clave_sl = self._clave_retroalimentacion_sl(features)
+        if clave_sl not in self.retroalimentacion_sl:
+            self.retroalimentacion_sl[clave_sl] = {
+                "wins": 0,
+                "sl_hits": 0,
+                "pnl": 0.0,
+                "ultimo_sl": None,
+            }
+        retro = self.retroalimentacion_sl[clave_sl]
+        if win:
+            retro["wins"] += 1
+        else:
+            retro["sl_hits"] += 1
+            retro["ultimo_sl"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+            total_sl = retro["wins"] + retro["sl_hits"]
+            sl_rate = retro["sl_hits"] / max(1, total_sl)
+            print(
+                f"  🧠 SL aprendido: {clave_sl.replace('|', ' + ')} | "
+                f"SL rate={sl_rate*100:.0f}% ({retro['sl_hits']}SL/{retro['wins']}W) | "
+                f"dist={features.get('distancia_sl_pct', '?')}%"
+            )
+        retro["pnl"] = round(retro.get("pnl", 0) + pnl, 4)
+
         # ── Activar bloqueo si cumple umbral ─────────────────────────────
         if (total_patron >= MIN_TRADES_PARA_APRENDER and
                 wr_patron < UMBRAL_BLOQUEO_WR and
@@ -507,7 +590,7 @@ class SniperAI:
 
         # ── Racha global ──────────────────────────────────────────────────
         self.racha_actual.append("WIN" if win else "LOSS")
-        self.racha_actual = self.racha_actual[-10:]
+        self.racha_actual = self.racha_actual[-15:]
 
         # ── Historial completo ────────────────────────────────────────────
         self.historial.append({
@@ -517,6 +600,8 @@ class SniperAI:
             "win"     : win,
             "pnl"     : round(pnl, 4),
             "wr_patron": round(wr_patron, 3),
+            "resultado": "TP" if win else "SL",
+            "clave_sl": clave_sl,
         })
         self.historial = self.historial[-200:]
 
@@ -598,11 +683,30 @@ class SniperAI:
                     f"({w}W/{l}L, pnl {stats.get('pnl', 0):+.2f}, n={total})"
                 )
 
-        # Alerta racha
-        if len(self.racha_actual) >= 3:
-            ultimos3 = self.racha_actual[-3:]
-            if all(r == "LOSS" for r in ultimos3):
-                print("  ⚠️  3 SL CONSECUTIVOS — revisá las condiciones del mercado")
+        # Alerta racha (solo informativa; el bloqueo es a 10)
+        racha_sl = self._contar_racha_negativa()
+        if racha_sl >= RACHA_NEGATIVA_ALERTA:
+            print(f"  ⚠️  {racha_sl} SL consecutivos — retroalimentando score "
+                  f"(bloqueo a {RACHA_NEGATIVA_BLOQUEO})")
+
+        if self.retroalimentacion_sl:
+            peores = sorted(
+                self.retroalimentacion_sl.items(),
+                key=lambda item: item[1].get("sl_hits", 0) / max(
+                    1, item[1].get("wins", 0) + item[1].get("sl_hits", 0)
+                ),
+                reverse=True
+            )[:3]
+            print("  Retroalimentación SL (condiciones más riesgosas):")
+            for clave, stats in peores:
+                total = stats.get("wins", 0) + stats.get("sl_hits", 0)
+                if total < MIN_TRADES_SL_RETRO:
+                    continue
+                sl_rate = stats.get("sl_hits", 0) / total * 100
+                print(
+                    f"    🛑 {clave.replace('|', ' + ')} = {sl_rate:.0f}% SL "
+                    f"({stats.get('sl_hits', 0)}SL/{stats.get('wins', 0)}W)"
+                )
 
         print("─" * 45)
 
@@ -616,10 +720,12 @@ class SniperAI:
             return "🧠 IA: sin datos aún"
         wr = self.total_wins / total * 100
         bloq = sum(1 for p in self.patrones.values() if p.get("bloqueado"))
+        racha_sl = self._contar_racha_negativa()
         racha = "".join("✅" if r=="WIN" else "❌" for r in self.racha_actual[-5:])
         return (f"🧠 IA: WR={wr:.1f}%({self.total_wins}W/{self.total_losses}L) | "
                 f"patrones={len(self.patrones)}({bloq}🚫) | "
-                f"activos={len(self.estadisticas_activos)} | racha={racha}")
+                f"activos={len(self.estadisticas_activos)} | "
+                f"racha={racha} | sl_seg={racha_sl}/{RACHA_NEGATIVA_BLOQUEO}")
 
 
 # Instancia global
