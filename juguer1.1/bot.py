@@ -15,7 +15,7 @@ import time
 from datetime import datetime
 
 import config
-from exchange import Exchange
+from exchange import Exchange, _is_transient
 from risk import can_trade, position_size, register_close, reset_day_if_needed
 from state import load_state, save_state
 from strategy import analyze
@@ -161,8 +161,12 @@ def main():
             log.info("Detenido por usuario.")
             break
         except Exception as e:
-            log.exception("Error loop: %s", e)
-            time.sleep(10)
+            if _is_transient(e):
+                log.warning("Red Binance inestable: %s — esperando 20s", e)
+                time.sleep(20)
+            else:
+                log.exception("Error loop: %s", e)
+                time.sleep(10)
 
 
 if __name__ == "__main__":

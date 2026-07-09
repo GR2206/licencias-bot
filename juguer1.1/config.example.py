@@ -32,3 +32,5 @@ SL_MAX_PCT = 0.006            # 0.60%
 
 # Loop
 SCAN_SECONDS = 45
+BINANCE_RETRIES = 5      # reintentos si la red corta (Termux)
+BINANCE_TIMEOUT = 30     # segundos por request a Binance
