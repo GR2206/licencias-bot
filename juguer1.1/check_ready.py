@@ -65,6 +65,12 @@ def main():
         print("\n🟢 BINANCE LISTO — ejecutá: python bot.py")
         return
 
+    from telegram_util import polling_enabled
+
+    if not polling_enabled():
+        print("ℹ️  Telegram solo-notificaciones (TELEGRAM_POLLING=False)")
+        print("   Sin comandos /status — el bot avisa entradas y cierres si la red lo permite")
+
     print("🔔 Probando Telegram (hasta 5 reintentos)...")
     from telegram_util import test_connection
     tg_ok, tg_msg = test_connection(retries=5)
@@ -82,6 +88,8 @@ def main():
         print("\n   Para arreglar Telegram después:")
         print("   • Probá con datos móviles o VPN")
         print("   • TELEGRAM_PROXY = 'socks5://127.0.0.1:1080' en config.py")
+        print("   • TELEGRAM_POLLING = False (evita errores de polling en Termux)")
+        print("   • TELEGRAM_DISABLED = True (sin Telegram, solo consola)")
         return
 
     print("\n❌ Telegram obligatorio y no conecta. No arranques hasta resolverlo.")

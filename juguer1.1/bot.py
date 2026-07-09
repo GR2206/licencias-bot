@@ -20,7 +20,7 @@ from risk import can_trade, position_size, register_close, reset_day_if_needed
 from state import load_state, save_state
 from strategy import analyze
 from telegram_ctl import start_telegram
-from telegram_util import send_message
+from telegram_util import polling_enabled, send_message, silence_telebot_logger
 
 logging.basicConfig(
     level=logging.INFO,
@@ -134,9 +134,12 @@ def main():
     reset_day_if_needed(state)
     save_state(state)
 
+    silence_telebot_logger()
     start_telegram(exchange, lambda: state)
 
     log.info("Juguer 1.1 iniciado | símbolos: %s | testnet: %s", config.SYMBOLS, config.TESTNET)
+    if not polling_enabled():
+        log.info("Telegram: solo notificaciones (sin comandos /status)")
     if send_message("🍊 <b>Juguer 1.1</b> en línea — Binance real"):
         log.info("Telegram conectado")
     else:

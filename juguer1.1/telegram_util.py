@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 from typing import Optional
 
@@ -18,6 +19,33 @@ apihelper.CONNECT_TIMEOUT = 30
 apihelper.READ_TIMEOUT = 60
 
 _bot: Optional[telebot.TeleBot] = None
+_telebot_logger_silenced = False
+
+
+def is_termux() -> bool:
+    return bool(os.environ.get("TERMUX_VERSION")) or os.path.isdir(
+        "/data/data/com.termux"
+    )
+
+
+def silence_telebot_logger() -> None:
+    """Evita tracebacks gigantes de pyTelegramBotAPI en redes inestables."""
+    global _telebot_logger_silenced
+    if _telebot_logger_silenced:
+        return
+    for name in ("TeleBot", "telebot"):
+        logging.getLogger(name).setLevel(logging.CRITICAL)
+    _telebot_logger_silenced = True
+
+
+def polling_enabled() -> bool:
+    """True = escucha comandos (/status, /pause). False = solo envía alertas."""
+    if getattr(config, "TELEGRAM_DISABLED", False):
+        return False
+    if hasattr(config, "TELEGRAM_POLLING"):
+        return bool(config.TELEGRAM_POLLING)
+    # En Termux el long-polling suele cortarse; por defecto solo notificaciones.
+    return not is_termux()
 
 
 def _proxy_url() -> Optional[str]:
@@ -27,6 +55,7 @@ def _proxy_url() -> Optional[str]:
 
 def get_bot() -> telebot.TeleBot:
     global _bot
+    silence_telebot_logger()
     if _bot is None:
         _bot = telebot.TeleBot(config.TELEGRAM_TOKEN, threaded=False)
         proxy = _proxy_url()

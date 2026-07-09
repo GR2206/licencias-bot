@@ -5,6 +5,7 @@
 #   pkg install python git termux-api
 #   pip install -r requirements.txt
 #   cp config.example.py config.py  # editar credenciales
+#   En config.py: TELEGRAM_POLLING = False  (recomendado en Termux)
 #   bash run_termux.sh
 
 cd "$(dirname "$0")"

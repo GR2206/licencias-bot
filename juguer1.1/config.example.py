@@ -8,6 +8,7 @@ TELEGRAM_TOKEN = "tu_token_botfather"
 TELEGRAM_CHAT_ID = "tu_chat_id"
 TELEGRAM_OPTIONAL = True   # True = arranca aunque Telegram falle
 TELEGRAM_DISABLED = False  # True = sin Telegram (solo consola)
+TELEGRAM_POLLING = False   # False = solo alertas (recomendado Termux); True = comandos /status /pause
 TELEGRAM_PROXY = ""        # ej: "socks5://127.0.0.1:1080" si tu red bloquea Telegram
 
 # Futures

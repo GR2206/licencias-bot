@@ -11,7 +11,7 @@ import telebot
 import config
 from risk import today_key
 from state import load_state, save_state
-from telegram_util import get_bot, send_message
+from telegram_util import get_bot, polling_enabled, send_message, silence_telebot_logger
 
 log = logging.getLogger("juguer.telegram")
 
@@ -19,6 +19,15 @@ log = logging.getLogger("juguer.telegram")
 def start_telegram(exchange, get_loop_stats):
     if getattr(config, "TELEGRAM_DISABLED", False):
         log.info("Telegram desactivado")
+        return
+
+    silence_telebot_logger()
+
+    if not polling_enabled():
+        log.info(
+            "Telegram en modo solo-notificaciones (TELEGRAM_POLLING=False). "
+            "Comandos /status, /pause desactivados."
+        )
         return
 
     bot = get_bot()
@@ -116,6 +125,7 @@ def start_telegram(exchange, get_loop_stats):
                     long_polling_timeout=30,
                     skip_pending=True,
                     allowed_updates=["message"],
+                    logger_level=logging.CRITICAL,
                 )
             except Exception as e:
                 log.warning("Telegram polling cayó: %s — reintento en 15s", e)

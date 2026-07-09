@@ -47,7 +47,8 @@ python bot.py
 3. `pkg install python git` y `pip install -r requirements.txt`
 4. Configurá `config.py`
 5. `bash run_termux.sh` — activa **wake lock** para que no se corte al bloquear pantalla.
-6. Controlá todo por **Telegram**: `/status`, `/pause`, `/resume`, `/stats`, `/close`
+6. En `config.py` usá `TELEGRAM_POLLING = False` (recomendado en Termux).
+7. Controlá por consola o, si tu red lo permite, alertas por Telegram.
 
 El bot corre en segundo plano; la pantalla puede estar apagada.
 
@@ -55,7 +56,16 @@ El bot corre en segundo plano; la pantalla puede estar apagada.
 
 Creá un bot con [@BotFather](https://t.me/BotFather), obtené token y tu `chat_id` (@userinfobot).
 
-Comandos:
+**Termux / redes inestables:** muchas redes bloquean o cortan el long-polling de Telegram. Usá:
+
+```python
+TELEGRAM_POLLING = False   # solo alertas de entradas/cierres (sin /status)
+TELEGRAM_OPTIONAL = True   # arranca aunque Telegram falle
+```
+
+Si no conecta en absoluto: `TELEGRAM_DISABLED = True` y operá solo por consola.
+
+Comandos (solo con `TELEGRAM_POLLING = True`):
 - `/status` — balance y posición
 - `/stats` — winrate y PnL
 - `/pause` / `/resume`
