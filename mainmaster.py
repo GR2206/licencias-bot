@@ -116,34 +116,54 @@ COOLDOWN_SL_MULTIPLE_HORAS = 24
 SL_PARA_COOLDOWN_LARGO = 2
 PERDIDA_DIARIA_MAX_PCT = 0.04
 PAUSA_TRAS_SL_CONSECUTIVOS = 4
-SCORE_CALIDAD_MIN = 1.05
-SCORE_CALIDAD_MIN_EXIGENTE = 1.30
-SCORE_CALIDAD_MIN_CONTRA = 1.40
+SCORE_CALIDAD_MIN = 1.15
+SCORE_CALIDAD_MIN_EXIGENTE = 1.35
+SCORE_CALIDAD_MIN_CONTRA = 1.45
+SCORE_CALIDAD_MIN_DESCONOCIDO = 1.30
 IMPULSO_M5_ACTIVO = False
+COOLDOWN_DIRECCION_HORAS = 12
+BITACORA_WR_MIN = 0.35
+BITACORA_TRADES_MIN = 3
 
 cooldown_sl = {}
+cooldown_direccion = {}
 estadisticas_dia = {"fecha": "", "pnl": 0.0, "sl_consecutivos": 0}
 historial_simbolos = {}
 
 SIMBOLOS_PREFERENTES = {
-    "CHZUSDT",
-    "ETHUSDT",
-    "XMRUSDT",
-    "SOLUSDT",
     "SUIUSDT",
+    "DOTUSDT",
+    "SNXUSDT",
+    "PEOPLEUSDT",
+    "HOTUSDT",
 }
 
 SIMBOLOS_EXIGENTES = {
     "OPUSDT",
     "NEARUSDT",
     "LINKUSDT",
-    "DOTUSDT",
     "FILUSDT",
     "INJUSDT",
     "FETUSDT",
     "TIAUSDT",
     "ADAUSDT",
     "LTCUSDT",
+    "SOLUSDT",
+    "DOGEUSDT",
+    "MAGICUSDT",
+    "BNBUSDT",
+    "CHZUSDT",
+    "XMRUSDT",
+    "CELRUSDT",
+    "CELOUSDT",
+    "VANAUSDT",
+    "AXSUSDT",
+    "ETHUSDT",
+}
+
+# Histórico bitácora: muchas pérdidas LONG repetidas
+SIMBOLOS_LONG_RESTRINGIDOS = {
+    "SOLUSDT", "DOGEUSDT", "MAGICUSDT", "BNBUSDT", "CHZUSDT", "XMRUSDT", "LTCUSDT",
 }
 
 SIMBOLOS_CUIDADO = {
@@ -255,6 +275,7 @@ SIMBOLO_ALIASES = {
     "100FLOKIUSDT": "1000FLOKIUSDT",
     "FLOKIUSDT": "1000FLOKIUSDT",
     "100LUNCUSDT": "1000LUNCUSDT",
+    "SUSDT": "SUIUSDT",
 }
 
 _simbolos_futures_cache = None
@@ -474,6 +495,7 @@ def guardar_estado():
         "trades_activos": trades_activos,
         "trades_info": trades_info,
         "cooldown_sl": cooldown_sl,
+        "cooldown_direccion": cooldown_direccion,
         "estadisticas_dia": estadisticas_dia,
         "historial_simbolos": historial_simbolos,
     }
@@ -484,7 +506,7 @@ def guardar_estado():
 # ======================================
 
 def cargar_estado():
-    global trades_activos, trades_info, cooldown_sl, estadisticas_dia, historial_simbolos
+    global trades_activos, trades_info, cooldown_sl, cooldown_direccion, estadisticas_dia, historial_simbolos
 
     if os.path.exists("estado_trades.json"):
         with open("estado_trades.json", "r") as f:
@@ -493,8 +515,11 @@ def cargar_estado():
             trades_activos = data.get("trades_activos", [])
             trades_info = data.get("trades_info", {})
             cooldown_sl = data.get("cooldown_sl", {})
+            cooldown_direccion = data.get("cooldown_direccion", {})
             estadisticas_dia = data.get("estadisticas_dia", {"fecha": "", "pnl": 0.0, "sl_consecutivos": 0})
             historial_simbolos = data.get("historial_simbolos", {})
+
+    aplicar_bloqueos_desde_bitacora()
 
 
 def _fecha_hoy() -> str:
@@ -534,9 +559,126 @@ def recuperar_datos_entrada(simbolo):
         return "N/A", 0.0
 
 
-def registrar_resultado_operacion(simbolo, pnl: float):
-    global BOT_PAUSADO, estadisticas_dia, cooldown_sl, historial_simbolos
+def clave_direccion(simbolo: str, accion: str) -> str:
+    return f"{normalizar_simbolo(simbolo)}|{accion}"
 
+
+def obtener_stats_bitacora() -> dict:
+    archivo = os.path.join(os.getcwd(), "bitacora_trading.xlsx")
+    if not os.path.exists(archivo):
+        return {}
+
+    try:
+        df = pd.read_excel(archivo)
+        if df.empty or "Simbolo" not in df.columns or "PNL" not in df.columns:
+            return {}
+
+        stats = {}
+        for sym in df["Simbolo"].dropna().unique():
+            sub = df[df["Simbolo"] == sym]
+            total = len(sub)
+            wins = len(sub[sub["PNL"] > 0])
+            stats[str(sym)] = {
+                "total": total,
+                "wins": wins,
+                "wr": wins / total if total else 0,
+                "pnl": float(sub["PNL"].sum()),
+            }
+
+        if "Direccion" in df.columns:
+            for _, row in df.iterrows():
+                sym = str(row.get("Simbolo", ""))
+                dir_ = str(row.get("Direccion", "")).upper()
+                pnl = float(row.get("PNL", 0) or 0)
+                if sym and dir_ in ("LONG", "SHORT"):
+                    key = f"{sym}|{dir_}"
+                    bucket = stats.setdefault(key, {"total": 0, "wins": 0, "wr": 0, "pnl": 0.0})
+                    bucket["total"] += 1
+                    if pnl > 0:
+                        bucket["wins"] += 1
+                    bucket["pnl"] = round(bucket.get("pnl", 0) + pnl, 4)
+                    bucket["wr"] = bucket["wins"] / bucket["total"]
+
+        return stats
+    except Exception as e:
+        print(f"⚠️ Error leyendo bitácora para stats: {e}")
+        return {}
+
+
+def aplicar_bloqueos_desde_bitacora():
+    global cooldown_sl
+    stats = obtener_stats_bitacora()
+    ahora = time.time()
+
+    for clave, data in stats.items():
+        total = data.get("total", 0)
+        wr = data.get("wr", 0)
+        pnl = data.get("pnl", 0)
+
+        if total < BITACORA_TRADES_MIN or wr >= BITACORA_WR_MIN or pnl >= 0:
+            continue
+
+        if "|" in clave:
+            cooldown_direccion[clave] = max(
+                cooldown_direccion.get(clave, 0),
+                ahora + COOLDOWN_SL_MULTIPLE_HORAS * 3600,
+            )
+            print(f"🧊 Bitácora bloquea {clave}: WR {wr*100:.0f}% ({total} trades)")
+        else:
+            cooldown_sl[clave] = max(
+                cooldown_sl.get(clave, 0),
+                ahora + COOLDOWN_SL_MULTIPLE_HORAS * 3600,
+            )
+            print(f"🧊 Bitácora bloquea {clave}: WR {wr*100:.0f}% ({total} trades)")
+
+
+def direccion_en_cooldown(simbolo: str, accion: str) -> bool:
+    clave = clave_direccion(simbolo, accion)
+    hasta = cooldown_direccion.get(clave, 0)
+    if hasta and time.time() < hasta:
+        restante = int((hasta - time.time()) / 60)
+        log_activo(simbolo, f"🧊 {accion} en cooldown ({restante} min)", True, "wait")
+        return True
+    return False
+
+
+def filtro_macro_direccion(simbolo: str, accion: str, macro: str, tendencia_h1: str, resultado: dict) -> bool:
+    calidad = float(resultado.get("score_calidad", resultado.get("score", 0)) or 0)
+
+    if macro == "BAJISTA" and accion == "LONG":
+        if tendencia_h1.startswith("LONG") and calidad >= 1.55:
+            return True
+        log_activo(simbolo, "❌ LONG bloqueado: BTC macro bajista sin calidad H1")
+        return False
+
+    if macro == "ALCISTA" and accion == "SHORT":
+        if tendencia_h1.startswith("SHORT") and calidad >= 1.55:
+            return True
+        log_activo(simbolo, "❌ SHORT bloqueado: BTC macro alcista sin calidad H1")
+        return False
+
+    return True
+
+
+def filtro_long_restringido(simbolo: str, accion: str, resultado: dict) -> bool:
+    simbolo = normalizar_simbolo(simbolo)
+    if accion != "LONG" or simbolo not in SIMBOLOS_LONG_RESTRINGIDOS:
+        return True
+
+    calidad = float(resultado.get("score_calidad", resultado.get("score", 0)) or 0)
+    tendencia_h1 = str(resultado.get("tendencia_h1", ""))
+
+    if calidad >= 1.60 and tendencia_h1.startswith("LONG"):
+        return True
+
+    log_activo(simbolo, "❌ LONG restringido: historial negativo en este activo")
+    return False
+
+
+def registrar_resultado_operacion(simbolo, pnl: float, direccion: str = "N/A"):
+    global BOT_PAUSADO, estadisticas_dia, cooldown_sl, cooldown_direccion, historial_simbolos
+
+    simbolo = normalizar_simbolo(simbolo)
     _reset_estadisticas_dia_si_corresponde()
     estadisticas_dia["pnl"] = round(estadisticas_dia.get("pnl", 0) + pnl, 4)
 
@@ -545,7 +687,7 @@ def registrar_resultado_operacion(simbolo, pnl: float):
         horas_cooldown = COOLDOWN_SL_HORAS
 
         hist = historial_simbolos.setdefault(simbolo, [])
-        hist.append({"ts": time.time(), "pnl": pnl})
+        hist.append({"ts": time.time(), "pnl": pnl, "direccion": direccion})
         historial_simbolos[simbolo] = hist[-20:]
 
         sl_recientes = sum(1 for t in hist[-6:] if t["pnl"] <= 0)
@@ -554,6 +696,10 @@ def registrar_resultado_operacion(simbolo, pnl: float):
 
         cooldown_sl[simbolo] = time.time() + horas_cooldown * 3600
         log_activo(simbolo, f"🧊 Cooldown {horas_cooldown}h tras SL", True, "wait")
+
+        if direccion in ("LONG", "SHORT"):
+            clave = clave_direccion(simbolo, direccion)
+            cooldown_direccion[clave] = time.time() + COOLDOWN_DIRECCION_HORAS * 3600
 
         if estadisticas_dia["sl_consecutivos"] >= PAUSA_TRAS_SL_CONSECUTIVOS:
             BOT_PAUSADO = True
@@ -617,6 +763,8 @@ def score_calidad_minimo(simbolo: str, analisis: dict) -> float:
         return SCORE_CALIDAD_MIN_CONTRA
     if perfil in ("EXIGENTE", "CUIDADO"):
         return SCORE_CALIDAD_MIN_EXIGENTE
+    if perfil == "NORMAL":
+        return SCORE_CALIDAD_MIN_DESCONOCIDO
     return SCORE_CALIDAD_MIN
 
 
@@ -982,7 +1130,7 @@ def revisar_cierres():
 
                 # 5. Guardar en Bitácora
                 guardar_en_bitacora(simbolo, direccion, precio_entrada, precio_salida, pnl_realizado)
-                registrar_resultado_operacion(simbolo, pnl_realizado)
+                registrar_resultado_operacion(simbolo, pnl_realizado, direccion)
 
                 # 6. Notificar (IMAGEN + SONIDO)
                 TELEGRAM_CHANNEL_ID = '-1003793634988'
@@ -1179,6 +1327,20 @@ def validacion_final(simbolo, resultado, df_h1, df_m15):
         return False
 
     accion = resultado["accion"]
+
+    # ==============================
+    # 0️⃣ ALINEACIÓN H1 OBLIGATORIA
+    # ==============================
+    tendencia_h1 = detectar_tendencia_h1(df_h1)
+    resultado["tendencia_h1"] = tendencia_h1
+
+    if accion == "LONG" and not tendencia_h1.startswith("LONG"):
+        log_activo(simbolo, f"❌ H1 {tendencia_h1} no permite LONG")
+        return False
+
+    if accion == "SHORT" and not tendencia_h1.startswith("SHORT"):
+        log_activo(simbolo, f"❌ H1 {tendencia_h1} no permite SHORT")
+        return False
 
     # ==============================
     # 1️⃣ FILTRO RSI EXTREMO
@@ -1855,12 +2017,29 @@ def loop_principal():
                     print()
                     continue
 
+                resultado["tendencia_h1"] = detectar_tendencia_h1(df_h1)
+                accion_prevista = resultado["accion"]
+
+                if direccion_en_cooldown(simbolo, accion_prevista):
+                    print()
+                    continue
+
                 # ==============================
                 # 🧠 MACRO BTC + MICRO (SNIPER)
                 # ==============================
 
                 df_btc_h4 = obtener_datos("BTCUSDT", KLINE_INTERVAL_4HOUR, 200)
                 macro = filtro_btc(df_btc_h4)
+
+                if not filtro_macro_direccion(
+                    simbolo, accion_prevista, macro, resultado["tendencia_h1"], resultado
+                ):
+                    print()
+                    continue
+
+                if not filtro_long_restringido(simbolo, accion_prevista, resultado):
+                    print()
+                    continue
 
                 micro = detectar_micro_tendencia(df_m15)
 

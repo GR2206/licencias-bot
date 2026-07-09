@@ -84,24 +84,34 @@ ENSEMBLE_VOTOS_MIN = 3
 MODELO_SCORE_MIN = 0.80
 
 SIMBOLOS_PREFERENTES = {
-    "CHZUSDT",
-    "ETHUSDT",
-    "XMRUSDT",
-    "SOLUSDT",
     "SUIUSDT",
+    "DOTUSDT",
+    "SNXUSDT",
+    "PEOPLEUSDT",
+    "HOTUSDT",
 }
 
 SIMBOLOS_EXIGENTES = {
     "OPUSDT",
     "NEARUSDT",
     "LINKUSDT",
-    "DOTUSDT",
     "FILUSDT",
     "INJUSDT",
     "FETUSDT",
     "TIAUSDT",
     "ADAUSDT",
     "LTCUSDT",
+    "SOLUSDT",
+    "DOGEUSDT",
+    "MAGICUSDT",
+    "BNBUSDT",
+    "CHZUSDT",
+    "XMRUSDT",
+    "CELRUSDT",
+    "CELOUSDT",
+    "VANAUSDT",
+    "AXSUSDT",
+    "ETHUSDT",
 }
 
 SIMBOLOS_CUIDADO = {
