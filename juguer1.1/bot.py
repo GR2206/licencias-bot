@@ -121,6 +121,17 @@ def main():
         print("Creá config.py desde config.example.py")
         sys.exit(1)
 
+    if getattr(config, "TESTNET", False):
+        log.warning("TESTNET activo — no es Binance real")
+    else:
+        log.info("Modo REAL — Binance Futures")
+
+    for name in ("BINANCE_API_KEY", "BINANCE_API_SECRET"):
+        val = str(getattr(config, name, ""))
+        if "tu_api" in val.lower():
+            print("Completá config.py con tus API keys reales")
+            sys.exit(1)
+
     exchange = Exchange()
     state = load_state()
     reset_day_if_needed(state)
