@@ -45,6 +45,10 @@ class ScanReport:
     score: int = 0
     min_score: int = 4
     signal: Optional["Signal"] = None
+    sl_rejected: bool = False
+    swing_level: float = 0.0
+    swing_tf: str = ""
+    preview_sl: float = 0.0
 
 
 @dataclass
@@ -56,6 +60,7 @@ class Signal:
     sl_pct: float
     score: int
     reasons: list[str]
+    sl_detail: str = ""   # ej. "swing low 15m 0.7127"
 
 
 def _bbands(close: pd.Series, length: int = 20, std_mult: float = 2.0) -> tuple[float, float]:
@@ -95,7 +100,84 @@ def _trend_15m(df: pd.DataFrame) -> tuple[str, float, float, float]:
     return "FLAT", adx, e20, e50
 
 
-def _sl_tp(price: float, side: str, atr_pct: float) -> tuple[float, float, float]:
+def _recent_swing_low(df: pd.DataFrame, lookback: int) -> float:
+    """Mínimo estructural reciente (excluye vela en formación)."""
+    n = min(lookback, len(df) - 2)
+    if n < 3:
+        return float(df["low"].iloc[-2])
+    return float(df["low"].iloc[-(n + 1):-1].min())
+
+
+def _recent_swing_high(df: pd.DataFrame, lookback: int) -> float:
+    """Máximo estructural reciente (excluye vela en formación)."""
+    n = min(lookback, len(df) - 2)
+    if n < 3:
+        return float(df["high"].iloc[-2])
+    return float(df["high"].iloc[-(n + 1):-1].max())
+
+
+def _structure_df(df_5m: pd.DataFrame, df_15m: pd.DataFrame) -> pd.DataFrame:
+    tf = getattr(config, "SL_STRUCTURE_TF", "15m")
+    return df_15m if tf == "15m" else df_5m
+
+
+def _sl_tp(
+    price: float,
+    side: str,
+    df_5m: pd.DataFrame,
+    df_15m: pd.DataFrame,
+    atr_pct: float,
+) -> Optional[tuple[float, float, float, str]]:
+    """
+    SL bajo el mínimo anterior (LONG) o sobre el máximo anterior (SHORT).
+    TP = distancia × RR_TARGET. None si el SL estructural excede el máximo permitido.
+    """
+    mode = getattr(config, "SL_MODE", "structure")
+    if mode != "structure":
+        return _sl_tp_atr(price, side, atr_pct)
+
+    lookback = int(getattr(config, "SL_STRUCTURE_LOOKBACK", 24))
+    buffer = float(getattr(config, "SL_STRUCTURE_BUFFER", 0.0015))
+    sl_min = float(config.SL_MIN_PCT)
+    sl_max = float(getattr(config, "SL_MAX_PCT", 0.025))
+    rr = float(config.RR_TARGET)
+    df_struct = _structure_df(df_5m, df_15m)
+    tf_label = getattr(config, "SL_STRUCTURE_TF", "15m")
+
+    if side == "LONG":
+        swing = _recent_swing_low(df_struct, lookback)
+        sl = swing * (1 - buffer)
+        if sl >= price:
+            sl = price * (1 - sl_min)
+        dist_pct = (price - sl) / price
+        if dist_pct < sl_min:
+            sl = price * (1 - sl_min)
+            dist_pct = sl_min
+        if dist_pct > sl_max:
+            return None
+        dist = price - sl
+        tp = price + dist * rr
+        detail = f"swing low {tf_label} {swing:.4f}"
+        return sl, tp, dist_pct * 100, detail
+
+    swing = _recent_swing_high(df_struct, lookback)
+    sl = swing * (1 + buffer)
+    if sl <= price:
+        sl = price * (1 + sl_min)
+    dist_pct = (sl - price) / price
+    if dist_pct < sl_min:
+        sl = price * (1 + sl_min)
+        dist_pct = sl_min
+    if dist_pct > sl_max:
+        return None
+    dist = sl - price
+    tp = price - dist * rr
+    detail = f"swing high {tf_label} {swing:.4f}"
+    return sl, tp, dist_pct * 100, detail
+
+
+def _sl_tp_atr(price: float, side: str, atr_pct: float) -> tuple[float, float, float, str]:
+    """Fallback: SL por ATR/porcentaje fijo (modo legacy)."""
     sl_pct = max(config.SL_MIN_PCT, min(config.SL_MAX_PCT, atr_pct * 0.9))
     dist = price * sl_pct
     rr = config.RR_TARGET
@@ -107,7 +189,22 @@ def _sl_tp(price: float, side: str, atr_pct: float) -> tuple[float, float, float
         sl = price + dist
         tp = price - dist * rr
 
-    return sl, tp, sl_pct * 100
+    return sl, tp, sl_pct * 100, "ATR/pct fijo"
+
+
+def _too_extended(price: float, side: str, df_15m: pd.DataFrame) -> tuple[bool, str]:
+    """Evita perseguir el precio cerca del techo (LONG) o piso (SHORT)."""
+    lookback = int(getattr(config, "SL_STRUCTURE_LOOKBACK", 24))
+    chase = float(getattr(config, "MAX_CHASE_PCT", 0.02))
+    if side == "LONG":
+        recent_high = _recent_swing_high(df_15m, lookback)
+        if price >= recent_high * (1 - chase):
+            return True, f"precio {price:.4f} cerca del máximo 15m {recent_high:.4f}"
+        return False, ""
+    recent_low = _recent_swing_low(df_15m, lookback)
+    if price <= recent_low * (1 + chase):
+        return True, f"precio {price:.4f} cerca del mínimo 15m {recent_low:.4f}"
+    return False, ""
 
 
 def _mark(ok: bool) -> str:
@@ -128,11 +225,19 @@ def format_scan(symbol: str, report: ScanReport) -> str:
         lines.append(f"  {_mark(chk.ok)} {chk.label}{extra}")
 
     if report.trend != "FLAT":
-        m5_total = len(report.checks) - 3
-        lines.append(
-            f"  Score: {report.score}/{m5_total} (mín {report.min_score})"
-            + (" → ENTRADA" if report.signal else " → sin setup")
-        )
+        suffix = " → ENTRADA" if report.signal else " → sin setup"
+        if report.sl_rejected and not report.signal:
+            if any(c.label.startswith("no perseguir") and not c.ok for c in report.checks):
+                suffix = " → sin setup (cerca del techo/piso — no perseguir)"
+            else:
+                sl_max = getattr(config, "SL_MAX_PCT", 0.025) * 100
+                suffix = f" → sin setup (SL estructural > {sl_max:.1f}%)"
+        lines.append(f"  Score: {report.score}/5 (mín {report.min_score}){suffix}")
+        if report.swing_level > 0:
+            lines.append(
+                f"  Estructura: swing {report.swing_tf} @ {report.swing_level:.4f}"
+                + (f" → SL {report.preview_sl:.4f}" if report.preview_sl else "")
+            )
     else:
         lines.append("  → sin setup (esperar tendencia 15m clara)")
 
@@ -192,6 +297,12 @@ def scan(df_5m: pd.DataFrame, df_15m: pd.DataFrame) -> ScanReport:
     score = 0
     min_score = 4
     signal: Optional[Signal] = None
+    sl_rejected = False
+    swing_level = 0.0
+    swing_tf = getattr(config, "SL_STRUCTURE_TF", "15m")
+    preview_sl = 0.0
+    df_struct = _structure_df(df_5m, df_15m)
+    lookback = int(getattr(config, "SL_STRUCTURE_LOOKBACK", 24))
 
     if trend == "UP":
         e9, e21 = float(ema9.iloc[-1]), float(ema21.iloc[-1])
@@ -236,9 +347,22 @@ def scan(df_5m: pd.DataFrame, df_15m: pd.DataFrame) -> ScanReport:
         ))
 
         if score >= min_score:
-            sl, tp, sl_pct = _sl_tp(price, "LONG", atr_pct)
-            reasons = [c.label for c in checks if c.ok and not c.label.startswith("EMA20<")]
-            signal = Signal("LONG", price, sl, tp, sl_pct, score, reasons)
+            chase, chase_detail = _too_extended(price, "LONG", df_15m)
+            checks.append(Check("no perseguir techo 15m", not chase, chase_detail))
+            if chase:
+                sl_rejected = True
+            else:
+                swing_level = _recent_swing_low(df_struct, lookback)
+                levels = _sl_tp(price, "LONG", df_5m, df_15m, atr_pct)
+                if levels is None:
+                    sl_rejected = True
+                    preview_sl = swing_level * (1 - float(getattr(config, "SL_STRUCTURE_BUFFER", 0.0015)))
+                else:
+                    sl, tp, sl_pct, sl_detail = levels
+                    preview_sl = sl
+                    reasons = [c.label for c in checks if c.ok and not c.label.startswith("EMA20<")]
+                    reasons.append(f"SL bajo {sl_detail}")
+                    signal = Signal("LONG", price, sl, tp, sl_pct, score, reasons, sl_detail)
 
     elif trend == "DOWN":
         e9, e21 = float(ema9.iloc[-1]), float(ema21.iloc[-1])
@@ -283,11 +407,27 @@ def scan(df_5m: pd.DataFrame, df_15m: pd.DataFrame) -> ScanReport:
         ))
 
         if score >= min_score:
-            sl, tp, sl_pct = _sl_tp(price, "SHORT", atr_pct)
-            reasons = [c.label for c in checks if c.ok and not c.label.startswith("EMA20>")]
-            signal = Signal("SHORT", price, sl, tp, sl_pct, score, reasons)
+            chase, chase_detail = _too_extended(price, "SHORT", df_15m)
+            checks.append(Check("no perseguir piso 15m", not chase, chase_detail))
+            if chase:
+                sl_rejected = True
+            else:
+                swing_level = _recent_swing_high(df_struct, lookback)
+                levels = _sl_tp(price, "SHORT", df_5m, df_15m, atr_pct)
+                if levels is None:
+                    sl_rejected = True
+                    preview_sl = swing_level * (1 + float(getattr(config, "SL_STRUCTURE_BUFFER", 0.0015)))
+                else:
+                    sl, tp, sl_pct, sl_detail = levels
+                    preview_sl = sl
+                    reasons = [c.label for c in checks if c.ok and not c.label.startswith("EMA20>")]
+                    reasons.append(f"SL sobre {sl_detail}")
+                    signal = Signal("SHORT", price, sl, tp, sl_pct, score, reasons, sl_detail)
 
-    return ScanReport(trend, adx_15, price, rsi_now, checks, score, min_score, signal)
+    return ScanReport(
+        trend, adx_15, price, rsi_now, checks, score, min_score, signal,
+        sl_rejected, swing_level, swing_tf, preview_sl,
+    )
 
 
 def analyze(df_5m: pd.DataFrame, df_15m: pd.DataFrame) -> Optional[Signal]:

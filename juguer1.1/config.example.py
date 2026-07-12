@@ -27,8 +27,17 @@ MAX_OPEN_POSITIONS = 1
 
 # Objetivo 3:2 (TP = 1.5 × SL)
 RR_TARGET = 1.5
-SL_MIN_PCT = 0.0025           # 0.25%
-SL_MAX_PCT = 0.006            # 0.60%
+
+# SL estructural: debajo del mínimo anterior (LONG) / sobre máximo anterior (SHORT)
+SL_MODE = "structure"          # "structure" | "atr"
+SL_STRUCTURE_TF = "15m"        # timeframe para detectar swing low/high
+SL_STRUCTURE_LOOKBACK = 24     # velas hacia atrás (24×15m = 6h)
+SL_STRUCTURE_BUFFER = 0.0015   # 0.15% debajo del swing low
+SL_MIN_PCT = 0.0025            # SL nunca más ajustado que 0.25%
+SL_MAX_PCT = 0.025             # rechaza trade si SL estructural > 2.5%
+
+# No entrar LONG cerca del techo reciente (evita perseguir como 0.7443 en SUI)
+MAX_CHASE_PCT = 0.02           # no LONG si precio a <2% del máximo 15m reciente
 
 # Loop
 SCAN_SECONDS = 45

@@ -101,11 +101,12 @@ def try_entry(exchange: Exchange, state, symbol: str):
     save_state(state)
 
     reasons = "\n".join(f"• {r}" for r in signal.reasons)
+    sl_note = f"\n📐 {signal.sl_detail}" if signal.sl_detail else ""
     msg = (
         f"🍊 <b>ENTRADA {signal.side}</b> {symbol}\n"
         f"Score: {signal.score}/5\n"
         f"Entrada: {signal.price:.4f}\n"
-        f"SL: {signal.sl:.4f} ({signal.sl_pct:.2f}%)\n"
+        f"SL: {signal.sl:.4f} ({signal.sl_pct:.2f}%){sl_note}\n"
         f"TP: {signal.tp:.4f} (RR 1:{config.RR_TARGET})\n"
         f"Riesgo: {config.RISK_PER_TRADE*100:.2f}%\n\n"
         f"{reasons}"
