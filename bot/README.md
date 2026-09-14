@@ -10,6 +10,11 @@ calcula todo él mismo. Eso es a propósito: un webhook de TradingView necesita
 una IP pública, y un celular no la tiene. Si el gráfico y el bot calculan lo
 mismo, no hace falta el puente.
 
+> **Si venís por el scalping de 5 minutos**, andá directo a
+> [Scalping de 5 minutos: por qué Binance no puede y dónde sí se puede](#scalping-de-5-minutos-por-qué-binance-no-puede-y-dónde-sí-se-puede).
+> Ahí está la cuenta que decide el asunto, y el [panel](#el-panel), que es lo
+> más útil de todo el proyecto: mide cualquier idea contra entrar al azar.
+
 ## Lo primero: los números reales
 
 Antes de la instalación, lo que corresponde saber. Probé la estrategia sobre
@@ -344,6 +349,204 @@ Lo que sí cambia a favor en MetaTrader es el **costo**: la ida y vuelta en oro 
 ~0.005% del precio contra ~0.10% en Binance futuros. Eso baja el piso del stop de
 1% a 0.30%, así que los stops cortos que buscabas recién son viables ahí.
 
+## Scalping de 5 minutos: por qué Binance no puede y dónde sí se puede
+
+Pediste un bot que entre y salga todo el tiempo, que no tenga la operación
+abierta más de 5 minutos, que un acierto recupere 2 o 3 pérdidas, y que el
+tamaño siga al capital para que sea compuesto. Cada pieza es razonable por
+separado. El problema es que dos de ellas —"5 minutos" y "en Binance"— se
+contradicen entre sí, y se puede demostrar con una sola cuenta.
+
+### La cuenta que lo decide
+
+Una operación de 5 minutos captura, como máximo, lo que el activo se mueve en 5
+minutos. Eso no es opinión, se mide. Mediana del recorrido de 5 velas de M1
+sobre 20 días reales:
+
+| activo | se mueve en 5 min | comisión Binance | stop razonable | la comisión vale | acierto para empatar (1:2) |
+|---|---|---|---|---|---|
+| BTCUSDT | 0.099% | 0.10% | 0.049% | **2.02 R** | **100.7%** |
+| ETHUSDT | 0.136% | 0.10% | 0.068% | 1.48 R | 82.5% |
+| SOLUSDT | 0.196% | 0.10% | 0.098% | 1.02 R | 67.4% |
+| DOGEUSDT | 0.209% | 0.10% | 0.104% | 0.96 R | 65.2% |
+| XRPUSDT | 0.213% | 0.10% | 0.106% | 0.94 R | 64.6% |
+| ADAUSDT | 0.273% | 0.10% | 0.137% | 0.73 R | 57.7% |
+
+En Bitcoin la comisión de ida y vuelta es **igual a todo lo que el precio se
+mueve en 5 minutos**. Con un stop de la mitad de ese recorrido pagás dos veces
+tu riesgo por el derecho a jugar, y necesitarías acertar más del 100% de las
+veces: no es difícil, es imposible.
+
+### El techo real no es 85%, es 33%
+
+Acá está la parte que cambia la forma de mirar todo esto. Entrando **al azar**,
+sin ningún indicador, con objetivo 1:2, el acierto que da es exactamente
+1/(1+RR) = 33.3%. Es la fórmula de la ruina del jugador: la probabilidad de
+tocar +2X antes de −X en un paseo aleatorio es un tercio.
+
+Medido sobre 71 días de oro en M5 entrando en momentos al azar:
+
+| stop | RR | acierto medido | acierto teórico | R/op bruto |
+|---|---|---|---|---|
+| 0.05% | 1:2 | 33.5% | 33.3% | +0.004 |
+| 0.05% | 1:3 | 24.9% | 25.0% | −0.006 |
+| 0.20% | 1:2 | 33.3% | 33.3% | −0.001 |
+| 0.20% | 1:3 | 25.0% | 25.0% | −0.001 |
+
+Coincide con la teoría en dos decimales, y la esperanza bruta es **cero** en
+cualquier combinación de stop y objetivo. A 5 minutos de plazo, el mercado es
+indistinguible de una moneda para este fin.
+
+Eso deja el criterio de evaluación reducido a una sola línea:
+
+```
+resultado = (cuánto le gana tu estrategia al azar) − (lo que cuesta operar)
+```
+
+Y reencuadra el 85% del que hablabas: **no hace falta 85%, hace falta ganarle 4
+o 5 puntos a 33%.** Suena mucho más fácil. Es lo que no logró ninguna de las
+reglas que probamos.
+
+### Qué pasa cuando se respeta el costo
+
+El scalper tiene un piso de stop derivado de la comisión: con 0.10% de ida y
+vuelta y aceptando regalar como máximo 0.15 R, el stop no puede bajar de 0.667%
+del precio. Eso resuelve el problema del costo y crea otro, porque un stop de
+0.667% con objetivo de 1.33% no se resuelve en 5 minutos. Medido en 60-90 días
+de M5:
+
+| activo | ops | op/día | acierto | vs azar | R/op | llegaron al objetivo |
+|---|---|---|---|---|---|---|
+| BTCUSDT | 8 | 0.09 | 25.0% | −2.4 pp | −0.515 | 0 de 8 |
+| ETHUSDT | 11 | 0.12 | 45.5% | +15.1 pp | −0.109 | 0 de 11 |
+| SOLUSDT | 19 | 0.21 | 42.1% | +7.8 pp | −0.047 | 1 de 19 |
+| DOGEUSDT | 20 | 0.22 | 45.0% | +11.9 pp | −0.208 | 1 de 20 |
+| XRPUSDT | 14 | 0.16 | 28.6% | −4.4 pp | −0.189 | 1 de 14 |
+| ADAUSDT | 40 | 0.44 | 32.5% | −5.2 pp | −0.337 | 1 de 40 |
+
+**De 112 operaciones, 5 llegaron al objetivo.** Y entre 0.09 y 0.44 operaciones
+por día, cuando querías entre 3 y 5. El bot no puede "entrar y salir
+continuamente" porque casi nunca se dan las condiciones que dejan un stop lo
+bastante ancho para pagar la comisión.
+
+### El límite de tiempo no es gratis: cuesta 0.34 R
+
+Lo más contraintuitivo de todo. La misma estrategia en ADAUSDT M5, con y sin la
+regla de cerrar a los 30 minutos:
+
+| | acierto | R por operación |
+|---|---|---|
+| sin límite de tiempo | 33.3% | −0.123 |
+| cerrando a los 30 minutos | 23.8% | **−0.460** |
+
+Cerrar por tiempo te cuesta 0.34 R por operación. El motivo es simple: en esas
+salidas pagás la comisión completa y cobrás un movimiento aleatorio de media
+cero. El límite de tiempo se siente como control del riesgo, pero es un impuesto.
+
+### La parte compuesta de tu idea está bien, y por eso hay que cuidarla
+
+Arriesgando 1% del capital por operación, 4 operaciones por día durante 6 meses
+(500 operaciones), partiendo de 1000, mediana de 400 corridas:
+
+| acierto | esperanza | capital final |
+|---|---|---|
+| 28.0% | −0.160 | 429 |
+| 33.3% (el azar) | 0.000 | 961 |
+| 36.0% | +0.080 | 1.417 |
+| 40.0% | +0.200 | 2.574 |
+| 45.0% | +0.350 | 5.593 |
+
+Tenías razón en que el compuesto es potente: 12 puntos de acierto separan
+perder la mitad de multiplicar por cinco. Pero el compuesto no crea la ventaja,
+la **amplifica**, y amplifica el signo que ya tengas. La comisión te empuja por
+debajo de 33.3%, y desde ahí lo único que compone es la pérdida.
+
+### Dónde sí da la cuenta
+
+El mismo cálculo en otros mercados, con el costo real de cada uno:
+
+| mercado y activo | mueve en 5 min | costo | en R | acierto para empatar (1:3) |
+|---|---|---|---|---|
+| **Plata en Exness** | 0.164% | 0.015% | 0.18 R | **29.6%** |
+| **Oro en Exness** | 0.100% | 0.015% | 0.30 R | **32.5%** |
+| S&P 500 | 0.053% | 0.015% | 0.57 R | 39.3% |
+| USDJPY | 0.047% | 0.015% | 0.64 R | 41.0% |
+| ADAUSDT en Binance | 0.273% | 0.100% | 0.73 R | 43.3% |
+| BTCUSDT en Binance | 0.099% | 0.100% | 2.02 R | 75.5% |
+| EURUSD | 0.012% | 0.015% | 2.58 R | 89.5% |
+
+Oro y plata son los únicos donde el scalping de 5 minutos es **aritméticamente
+posible**: hace falta 29-33% de acierto y el azar ya da 25-33%. La distancia a
+cubrir es de puntos, no de decenas de puntos.
+
+Y fijate en **EURUSD, que es lo peor de toda la tabla**, al revés de lo que
+supone casi todo el mundo cuando piensa en scalping. Se mueve 1.4 pips en 5
+minutos y el spread es 1 pip: el spread es el 80% del movimiento disponible.
+(Los datos de forex de Yahoo vienen redondeados a 1 pip, así que ese número es
+orden de magnitud, no precisión; la conclusión no cambia.)
+
+### Lo que no encontré, y lo busqué
+
+Posible no es lo mismo que rentable. La estrategia de impulso + FVG en oro M5,
+en 96 combinaciones de umbral de impulso, exigencia de hueco, punto de toque,
+colchón y RR:
+
+- **90 de 96 aciertan MENOS que entrar al azar** con el mismo stop. Varias hasta
+  22 puntos menos.
+- La mejor le gana al azar por 1.6 puntos en 59 operaciones, que es ruido.
+
+Y no es mala suerte, es estructural: entrar en el retroceso a un hueco significa
+entrar justo donde el mercado acaba de mostrar que hay órdenes en contra, con el
+stop apenas del otro lado de un nivel que todos ven.
+
+### Sobre Deriv
+
+Los **índices sintéticos** de Deriv (Volatility 75, Boom, Crash, Step) no son
+mercados: los genera un generador de números aleatorios de Deriv con volatilidad
+fija y publicada. Eso significa que la esperanza cero que medí en oro por
+casualidad, ahí es cero **por construcción**, y no hay chartismo, FVG ni orden
+institucional que encontrar porque no hay flujo de órdenes: no hay nadie del otro
+lado. Con cualquier spread la esperanza es estrictamente negativa. Es el peor
+lugar posible para esta idea, aunque sea el que tiene la API más cómoda.
+
+Deriv también ofrece forex y metales reales por CFD y su propio MetaTrader 5.
+Si querés usar Deriv, usá eso, no los sintéticos.
+
+### Entonces qué
+
+Ordenado por lo que dicen los números:
+
+1. **Binance para scalping de 5 minutos: no.** No es cuestión de afinar
+   parámetros, la comisión es igual al movimiento disponible. Binance sigue
+   sirviendo para las temporalidades de H1 y M30 del resto del proyecto, donde
+   el movimiento es 20 veces más grande que el costo.
+2. **Oro o plata en Exness, con MetaTrader 5:** es el único lugar donde el
+   costo deja espacio. Está armado en [`metatrader/`](../metatrader/README.md) y
+   arranca en modo visual, sin operar.
+3. **Deriv sintéticos: no,** por la razón de arriba.
+4. **Antes de cualquiera de las tres, usá el panel.** Es lo que más te va a
+   servir de todo esto.
+
+### El panel
+
+```bash
+cd bot
+cp config.scalper.env config.env
+ESTRATEGIA=scalper python panel.py
+```
+
+Abrilo en el navegador del celular en `http://localhost:8777`. Muestra, por
+símbolo, la tendencia mayor, el chequeo de confluencias en vivo (las "3 o 4
+características" que te gustaban del bot anterior) y la señal si hay. No manda
+órdenes.
+
+Lo importante es el botón **medir**: corre el backtest de la configuración que
+tengas puesta y la compara contra entrar al azar en ese mismo activo con ese
+mismo stop. Un tablero con cinco luces verdes no dice nada; lo que decide es esa
+comparación. Es la herramienta que hubiera ahorrado la mitad del trabajo de este
+proyecto, y sirve para cualquier idea que se te ocurra de acá en adelante,
+incluidas las que yo no probé.
+
 ## Instalación en Termux
 
 ```bash
@@ -470,6 +673,9 @@ el stop llegue a actuar.
 | `bot.py` | loop principal: mira, decide, ejecuta y gestiona la parcial |
 | `estrategia.py` | la lógica de confluencia (Order Blocks), espejo del script de Pine |
 | `linea_gris.py` | la regla del martillo en la EMA 200 y la ruptura |
+| `scalper.py` | impulso e imbalance (FVG) con salida por tiempo, y el contador de confluencias |
+| `referencia.py` | **qué da entrar al azar**: el patrón que toda estrategia tiene que superar |
+| `panel.py` | panel web para el celular, con el botón de medir contra el azar |
 | `indicadores.py` | ATR, EMA, RSI, SuperTrend, pivotes y niveles diarios |
 | `binance_api.py` | cliente REST firmado (real o testnet) |
 | `probar.py` | simulación de un activo sobre historia real, con comisiones |
@@ -479,11 +685,12 @@ el stop llegue a actuar.
 | `config.chzusdt.env` | plantilla ya ajustada para CHZUSDT en H1 y M30 |
 | `config.multi.env` | canasta de 8 activos en M15, ~4 operaciones por día |
 | `config.linea_gris.env` | la regla de la línea gris, 8 activos en M15+H1, 3 por día |
+| `config.scalper.env` | scalping en M5, con la cuenta de por qué no cierra en Binance |
 
-Se elige la estrategia con `ESTRATEGIA=order_blocks` (por defecto) o
-`ESTRATEGIA=linea_gris`. Las dos comparten el mismo motor de ejecución, gestión
-de riesgo y estado, así que todo lo que dice este README sobre órdenes, tamaño de
-posición y límites de Binance vale para las dos.
+Se elige la estrategia con `ESTRATEGIA=order_blocks` (por defecto),
+`ESTRATEGIA=linea_gris` o `ESTRATEGIA=scalper`. Las tres comparten el mismo motor
+de ejecución, gestión de riesgo y estado, así que todo lo que dice este README
+sobre órdenes, tamaño de posición y límites de Binance vale para las tres.
 
 Todos los parámetros de la estrategia se pueden cambiar desde el `.env` en
 MAYÚSCULAS (`RR`, `PIVOTE`, `RIESGO_MAX_PCT`, `EXIGIR_FVG`, `PARCIAL_1R`…). No
