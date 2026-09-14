@@ -1,0 +1,281 @@
+// =============================================================================
+//  ORDER BLOCKS PRO + NIVELES DIARIOS
+// =============================================================================
+//  Indicador para TradingView (Pine Script v5).
+//
+//  Marca Order Blocks (zonas de oferta y demanda) con reglas 100% mecanicas:
+//
+//    1. Estructura : se detectan pivotes de maximo y minimo (swing highs/lows).
+//    2. Ruptura    : el precio CIERRA mas alla del ultimo pivote sin romper
+//                    (Break of Structure). Sin BOS no hay Order Block.
+//    3. Origen     : se busca hacia atras la ultima vela contraria al impulso.
+//                    Esa vela ES el Order Block.
+//    4. Calidad    : el impulso debe desplazar mas de N x ATR y (opcional)
+//                    dejar un imbalance / Fair Value Gap en la pierna.
+//    5. Mitigacion : cuando el precio atraviesa el bloque, se atenua o se borra.
+//
+//  Ademas dibuja con linea punteada el maximo y minimo del dia anterior
+//  (PDH / PDL) y del dia en curso (HOD / LOD).
+// =============================================================================
+
+//@version=5
+indicator("Order Blocks Pro + Niveles Diarios", shorttitle="OB Pro", overlay=true, max_boxes_count=500, max_lines_count=500, max_labels_count=500)
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  INPUTS
+// ─────────────────────────────────────────────────────────────────────────────
+gOB = "① Order Blocks"
+pivLen     = input.int(5, "Fuerza del pivote (estructura)", minval=2, maxval=20, group=gOB, tooltip="Velas a cada lado que definen un maximo/minimo estructural. Mas alto = estructura mas importante y menos bloques.")
+obLookback = input.int(12, "Velas hacia atras para buscar el origen", minval=2, maxval=40, group=gOB)
+obZone     = input.string("Vela completa", "Zona del bloque", options=["Vela completa", "Cuerpo"], group=gOB, tooltip="Vela completa = mecha a mecha (zona mas amplia, mas segura). Cuerpo = solo apertura/cierre (entradas mas finas).")
+maxOB      = input.int(10, "Bloques activos en pantalla", minval=1, maxval=40, group=gOB)
+obExtend   = input.int(25, "Extender cajas hacia la derecha (velas)", minval=0, maxval=200, group=gOB)
+confirmBos = input.bool(true, "Confirmar la ruptura al cierre de vela", group=gOB, tooltip="Recomendado. Evita que aparezcan bloques por una mecha que despues se anula.")
+showLbl    = input.bool(true, "Etiqueta en la caja", group=gOB)
+
+gQ = "② Filtros de calidad"
+useDisp  = input.bool(true, "Exigir desplazamiento (impulso fuerte)", group=gQ)
+dispMult = input.float(1.5, "Impulso minimo = ATR ×", minval=0.2, step=0.1, group=gQ)
+useFvg   = input.bool(true, "Exigir imbalance / FVG en el impulso", group=gQ, tooltip="Solo acepta el bloque si la pierna de impulso dejo un hueco de precio sin negociar. Es el filtro que mas sube la calidad.")
+useVolF  = input.bool(false, "Exigir volumen sobre la media en el origen", group=gQ)
+volLen   = input.int(20, "Volumen — media", minval=1, group=gQ)
+atrLen   = input.int(14, "ATR — periodo", minval=1, group=gQ)
+
+gM = "③ Mitigacion"
+mitMode = input.string("Cierre", "El bloque se anula por", options=["Cierre", "Mecha"], group=gM, tooltip="Cierre = hace falta que una vela cierre del otro lado. Mecha = alcanza con perforarlo.")
+mitAct  = input.string("Atenuar", "Cuando se anula", options=["Atenuar", "Eliminar"], group=gM)
+
+gD = "④ Niveles diarios"
+showPrevDay = input.bool(true, "Maximo/minimo del dia anterior (PDH / PDL)", group=gD)
+showToday   = input.bool(true, "Maximo/minimo del dia en curso (HOD / LOD)", group=gD)
+dayExt      = input.int(12, "Extender lineas (velas)", minval=0, maxval=100, group=gD)
+prevDayCol  = input.color(#b2b5be, "Color dia anterior", group=gD)
+todayCol    = input.color(#787b86, "Color dia en curso", group=gD)
+
+gS = "⑤ Estilo"
+bullCol  = input.color(#00e5a0, "Bloque de compra (demanda)", group=gS)
+bearCol  = input.color(#ff3c5f, "Bloque de venta (oferta)", group=gS)
+obTransp = input.int(82, "Transparencia de las cajas", minval=0, maxval=100, group=gS)
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  ESTRUCTURA Y RUPTURAS
+// ─────────────────────────────────────────────────────────────────────────────
+atr    = ta.atr(atrLen)
+volAvg = ta.sma(volume, volLen)
+
+ph = ta.pivothigh(high, pivLen, pivLen)
+pl = ta.pivotlow(low, pivLen, pivLen)
+
+var float ultPH  = na
+var float ultPL  = na
+var bool  phVivo = false   // hay un maximo estructural todavia sin romper
+var bool  plVivo = false
+
+if not na(ph)
+    ultPH  := ph
+    phVivo := true
+if not na(pl)
+    ultPL  := pl
+    plVivo := true
+
+rupturaOk = confirmBos ? barstate.isconfirmed : true
+bosUp = phVivo and not na(ultPH) and close > ultPH and rupturaOk
+bosDn = plVivo and not na(ultPL) and close < ultPL and rupturaOk
+if bosUp
+    phVivo := false
+if bosDn
+    plVivo := false
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  ALMACEN DE BLOQUES ACTIVOS
+// ─────────────────────────────────────────────────────────────────────────────
+var box[]   oBx  = array.new_box()
+var label[] oLb  = array.new_label()
+var float[] oTop = array.new_float()
+var float[] oBot = array.new_float()
+var int[]   oDir = array.new_int()
+var bool[]  oTch = array.new_bool()
+
+// Offset de la ultima vela contraria al impulso, o -1 si no aparece.
+buscarOrigen(esAlcista) =>
+    int k = -1
+    for i = 1 to obLookback
+        if k == -1
+            bool opuesta = esAlcista ? close[i] < open[i] : close[i] > open[i]
+            if opuesta
+                k := i
+    k
+
+// Filtros de calidad sobre el bloque candidato.
+validarOB(esAlcista, k) =>
+    bool ok = k >= 1
+    if ok and useDisp
+        float impulso = esAlcista ? close - open[k - 1] : open[k - 1] - close
+        ok := impulso >= atr * dispMult
+    if ok and useFvg
+        bool hayFvg = false
+        if k >= 2
+            for j = k to 2
+                if not hayFvg
+                    hayFvg := esAlcista ? low[j - 2] > high[j] : high[j - 2] < low[j]
+        ok := hayFvg
+    if ok and useVolF
+        ok := volume[k] > volAvg[k]
+    ok
+
+crearOB(esAlcista, k) =>
+    float t   = obZone == "Cuerpo" ? math.max(open[k], close[k]) : high[k]
+    float b   = obZone == "Cuerpo" ? math.min(open[k], close[k]) : low[k]
+    color col = esAlcista ? bullCol : bearCol
+    int   izq = bar_index - k
+    box bx = box.new(izq, t, bar_index + obExtend, b, border_color=color.new(col, 30), border_width=1, bgcolor=color.new(col, obTransp))
+    label lb = label.new(izq, esAlcista ? b : t, esAlcista ? "OB compra" : "OB venta", style=esAlcista ? label.style_label_up : label.style_label_down, color=color.new(col, showLbl ? 15 : 100), textcolor=color.new(color.white, showLbl ? 0 : 100), size=size.tiny)
+    array.push(oBx, bx)
+    array.push(oLb, lb)
+    array.push(oTop, t)
+    array.push(oBot, b)
+    array.push(oDir, esAlcista ? 1 : -1)
+    array.push(oTch, false)
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  MANTENIMIENTO DE LOS BLOQUES ACTIVOS
+// ─────────────────────────────────────────────────────────────────────────────
+bool tocoBull = false
+bool tocoBear = false
+
+if array.size(oBx) > 0
+    for i = array.size(oBx) - 1 to 0
+        float t  = array.get(oTop, i)
+        float b  = array.get(oBot, i)
+        int   d  = array.get(oDir, i)
+        box   bx = array.get(oBx, i)
+
+        bool anulado = d == 1 ? (mitMode == "Cierre" ? close < b : low < b) : (mitMode == "Cierre" ? close > t : high > t)
+
+        if anulado
+            if mitAct == "Eliminar"
+                box.delete(bx)
+            else
+                color col = d == 1 ? bullCol : bearCol
+                box.set_bgcolor(bx, color.new(col, math.min(99, obTransp + 12)))
+                box.set_border_color(bx, color.new(col, 55))
+                box.set_border_style(bx, line.style_dashed)
+            label.delete(array.get(oLb, i))
+            array.remove(oBx, i)
+            array.remove(oLb, i)
+            array.remove(oTop, i)
+            array.remove(oBot, i)
+            array.remove(oDir, i)
+            array.remove(oTch, i)
+        else
+            box.set_right(bx, bar_index + obExtend)
+            bool dentro = low <= t and high >= b
+            if dentro and not array.get(oTch, i)
+                array.set(oTch, i, true)
+                if d == 1
+                    tocoBull := true
+                else
+                    tocoBear := true
+            if not dentro
+                array.set(oTch, i, false)
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  CREACION DE BLOQUES NUEVOS
+// ─────────────────────────────────────────────────────────────────────────────
+bool nuevoBull = false
+bool nuevoBear = false
+
+if bosUp
+    int k = buscarOrigen(true)
+    if validarOB(true, k)
+        crearOB(true, k)
+        nuevoBull := true
+
+if bosDn
+    int k = buscarOrigen(false)
+    if validarOB(false, k)
+        crearOB(false, k)
+        nuevoBear := true
+
+while array.size(oBx) > maxOB
+    box.delete(array.shift(oBx))
+    label.delete(array.shift(oLb))
+    array.shift(oTop)
+    array.shift(oBot)
+    array.shift(oDir)
+    array.shift(oTch)
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  MAXIMOS Y MINIMOS DIARIOS (linea punteada)
+// ─────────────────────────────────────────────────────────────────────────────
+diaNuevo = ta.change(time("D")) != 0
+
+var float hoyHi   = na
+var float hoyLo   = na
+var float ayerHi  = na
+var float ayerLo  = na
+var int   hoyBar  = 0
+var int   ayerBar = 0
+
+if diaNuevo
+    ayerHi  := hoyHi
+    ayerLo  := hoyLo
+    ayerBar := hoyBar
+    hoyBar  := bar_index
+    hoyHi   := high
+    hoyLo   := low
+else
+    hoyHi := math.max(nz(hoyHi, high), high)
+    hoyLo := math.min(nz(hoyLo, low), low)
+
+var line  lnAyerHi = na
+var label lbAyerHi = na
+if showPrevDay and not na(ayerHi)
+    if na(lnAyerHi)
+        lnAyerHi := line.new(ayerBar, ayerHi, bar_index + dayExt, ayerHi, color=prevDayCol, style=line.style_dotted, width=1)
+        lbAyerHi := label.new(bar_index + dayExt, ayerHi, "PDH", style=label.style_label_left, color=color.new(color.black, 100), textcolor=prevDayCol, size=size.tiny)
+    else
+        line.set_xy1(lnAyerHi, ayerBar, ayerHi)
+        line.set_xy2(lnAyerHi, bar_index + dayExt, ayerHi)
+        label.set_xy(lbAyerHi, bar_index + dayExt, ayerHi)
+
+var line  lnAyerLo = na
+var label lbAyerLo = na
+if showPrevDay and not na(ayerLo)
+    if na(lnAyerLo)
+        lnAyerLo := line.new(ayerBar, ayerLo, bar_index + dayExt, ayerLo, color=prevDayCol, style=line.style_dotted, width=1)
+        lbAyerLo := label.new(bar_index + dayExt, ayerLo, "PDL", style=label.style_label_left, color=color.new(color.black, 100), textcolor=prevDayCol, size=size.tiny)
+    else
+        line.set_xy1(lnAyerLo, ayerBar, ayerLo)
+        line.set_xy2(lnAyerLo, bar_index + dayExt, ayerLo)
+        label.set_xy(lbAyerLo, bar_index + dayExt, ayerLo)
+
+var line  lnHoyHi = na
+var label lbHoyHi = na
+if showToday and not na(hoyHi)
+    if na(lnHoyHi)
+        lnHoyHi := line.new(hoyBar, hoyHi, bar_index + dayExt, hoyHi, color=todayCol, style=line.style_dotted, width=1)
+        lbHoyHi := label.new(bar_index + dayExt, hoyHi, "HOD", style=label.style_label_left, color=color.new(color.black, 100), textcolor=todayCol, size=size.tiny)
+    else
+        line.set_xy1(lnHoyHi, hoyBar, hoyHi)
+        line.set_xy2(lnHoyHi, bar_index + dayExt, hoyHi)
+        label.set_xy(lbHoyHi, bar_index + dayExt, hoyHi)
+
+var line  lnHoyLo = na
+var label lbHoyLo = na
+if showToday and not na(hoyLo)
+    if na(lnHoyLo)
+        lnHoyLo := line.new(hoyBar, hoyLo, bar_index + dayExt, hoyLo, color=todayCol, style=line.style_dotted, width=1)
+        lbHoyLo := label.new(bar_index + dayExt, hoyLo, "LOD", style=label.style_label_left, color=color.new(color.black, 100), textcolor=todayCol, size=size.tiny)
+    else
+        line.set_xy1(lnHoyLo, hoyBar, hoyLo)
+        line.set_xy2(lnHoyLo, bar_index + dayExt, hoyLo)
+        label.set_xy(lbHoyLo, bar_index + dayExt, hoyLo)
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  ALERTAS
+// ─────────────────────────────────────────────────────────────────────────────
+alertcondition(tocoBull,  "Precio dentro de OB de compra", "{{ticker}} ({{interval}}) entro en un Order Block de COMPRA @ {{close}}")
+alertcondition(tocoBear,  "Precio dentro de OB de venta",  "{{ticker}} ({{interval}}) entro en un Order Block de VENTA @ {{close}}")
+alertcondition(nuevoBull, "Nuevo OB de compra",            "Nuevo Order Block de COMPRA en {{ticker}} ({{interval}})")
+alertcondition(nuevoBear, "Nuevo OB de venta",             "Nuevo Order Block de VENTA en {{ticker}} ({{interval}})")

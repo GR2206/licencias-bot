@@ -1,0 +1,312 @@
+// =============================================================================
+//  CONFLUENCE ENGINE — Tendencia + Order Block + gestion 1:3
+// =============================================================================
+//  Indicador para TradingView (Pine Script v5).
+//
+//  Es el script que dispara las ordenes. Une los dos motores:
+//
+//    A) Tendencia  : SuperTrend (ATR) + EMA + RSI  ->  define el lado permitido
+//    B) Estructura : Break of Structure + Order Block validado
+//
+//  LA IDEA: el Order Block NO se opera cuando se crea (ahi el precio ya se fue
+//  con el impulso), se opera cuando el precio VUELVE a el. Entonces:
+//
+//    1. Un BOS con desplazamiento deja un Order Block marcado.
+//    2. El precio retrocede y entra en ese bloque.
+//    3. Si la tendencia sigue a favor -> ENTRADA.
+//       Entry = cierre de la vela.
+//       SL    = borde lejano del bloque + colchon ATR.
+//       TP    = Entry + riesgo x RR  (RR = 3 por defecto).
+//    4. Cada bloque se usa UNA sola vez.
+//
+//  La alerta sale en JSON listo para un webhook. Pensado para H1 y M30.
+// =============================================================================
+
+//@version=5
+indicator("Confluence Engine — Trend + OB 1:3", shorttitle="Confluence 1:3", overlay=true, max_boxes_count=500, max_lines_count=500, max_labels_count=500)
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  INPUTS
+// ─────────────────────────────────────────────────────────────────────────────
+gT = "① Motor de tendencia"
+atrLen       = input.int(14, "ATR — periodo", minval=1, group=gT)
+factor       = input.float(2.6, "Sensibilidad (factor ATR)", minval=0.5, maxval=15, step=0.1, group=gT)
+confirmClose = input.bool(true, "Confirmar todo al cierre de vela", group=gT, tooltip="Dejalo activado. Es lo que evita que la senal aparezca y desaparezca dentro de la vela en curso.")
+useEma = input.bool(true, "Filtro EMA", group=gT)
+emaLen = input.int(200, "EMA — periodo", minval=1, group=gT)
+useRsi = input.bool(true, "Filtro RSI", group=gT)
+rsiLen = input.int(14, "RSI — periodo", minval=1, group=gT)
+rsiMid = input.float(50, "RSI — nivel neutro", minval=1, maxval=99, group=gT)
+
+gOB = "② Order Blocks"
+pivLen     = input.int(5, "Fuerza del pivote (estructura)", minval=2, maxval=20, group=gOB)
+obLookback = input.int(12, "Velas hacia atras para el origen", minval=2, maxval=40, group=gOB)
+obZone     = input.string("Vela completa", "Zona del bloque", options=["Vela completa", "Cuerpo"], group=gOB)
+maxOB      = input.int(10, "Bloques activos en pantalla", minval=1, maxval=40, group=gOB)
+obExtend   = input.int(25, "Extender cajas (velas)", minval=0, maxval=200, group=gOB)
+useDisp    = input.bool(true, "Exigir desplazamiento", group=gOB)
+dispMult   = input.float(1.5, "Impulso minimo = ATR ×", minval=0.2, step=0.1, group=gOB)
+useFvg     = input.bool(true, "Exigir imbalance / FVG", group=gOB)
+mitMode    = input.string("Cierre", "El bloque se anula por", options=["Cierre", "Mecha"], group=gOB)
+
+gE = "③ Entrada y gestion"
+tolMult    = input.float(0.25, "Tolerancia de toque = ATR ×", minval=0, step=0.05, group=gE, tooltip="Cuanto puede faltarle al precio para considerar que toco el bloque.")
+slBuf      = input.float(0.30, "Colchon del stop = ATR ×", minval=0, step=0.05, group=gE)
+rr         = input.float(3.0, "Relacion riesgo/beneficio (RR)", minval=0.5, step=0.5, group=gE)
+minRiskPct = input.float(0.15, "Riesgo minimo (% del precio)", minval=0.01, step=0.05, group=gE, tooltip="Descarta stops absurdamente pegados, donde cualquier mecha te saca.")
+maxRiskPct = input.float(3.0, "Riesgo maximo (% del precio)", minval=0.1, step=0.1, group=gE, tooltip="Si el stop queda mas lejos que esto, se descarta la operacion.")
+cooldown   = input.int(5, "Velas de espera entre entradas", minval=0, maxval=100, group=gE)
+levelBars  = input.int(30, "Largo de las lineas Entry/SL/TP", minval=5, maxval=200, group=gE)
+
+gW = "④ Webhook"
+secret = input.string("cambiame", "Clave secreta del webhook", group=gW, tooltip="El bot rechaza cualquier mensaje que no traiga esta clave.")
+qtyPct = input.float(2.0, "Riesgo por operacion (% de la cuenta)", minval=0.1, step=0.1, group=gW, tooltip="Va dentro del JSON. El tamano final lo calcula el bot.")
+
+gS = "⑤ Estilo"
+bullCol   = input.color(#00e5a0, "Alcista", group=gS)
+bearCol   = input.color(#ff3c5f, "Bajista", group=gS)
+obTransp  = input.int(82, "Transparencia de las cajas", minval=0, maxval=100, group=gS)
+showTrend = input.bool(true, "Mostrar linea de tendencia", group=gS)
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  MOTOR A — TENDENCIA
+// ─────────────────────────────────────────────────────────────────────────────
+atr    = ta.atr(atrLen)
+emaVal = ta.ema(close, emaLen)
+rsiVal = ta.rsi(close, rsiLen)
+
+[stLine, stDir] = ta.supertrend(factor, atrLen)
+bull = stDir < 0
+
+confirmado = confirmClose ? barstate.isconfirmed : true
+longOk  = bull       and (not useEma or close > emaVal) and (not useRsi or rsiVal > rsiMid)
+shortOk = not bull   and (not useEma or close < emaVal) and (not useRsi or rsiVal < rsiMid)
+
+flipUp = bull and not bull[1]
+flipDn = not bull and bull[1]
+
+trendCol = bull ? bullCol : bearCol
+plot(showTrend ? stLine : na, "Tendencia", color=trendCol, linewidth=2)
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  MOTOR B — ORDER BLOCKS
+// ─────────────────────────────────────────────────────────────────────────────
+ph = ta.pivothigh(high, pivLen, pivLen)
+pl = ta.pivotlow(low, pivLen, pivLen)
+
+var float ultPH  = na
+var float ultPL  = na
+var bool  phVivo = false
+var bool  plVivo = false
+
+if not na(ph)
+    ultPH  := ph
+    phVivo := true
+if not na(pl)
+    ultPL  := pl
+    plVivo := true
+
+bosUp = phVivo and not na(ultPH) and close > ultPH and confirmado
+bosDn = plVivo and not na(ultPL) and close < ultPL and confirmado
+if bosUp
+    phVivo := false
+if bosDn
+    plVivo := false
+
+var box[]   oBx   = array.new_box()
+var float[] oTop  = array.new_float()
+var float[] oBot  = array.new_float()
+var int[]   oDir  = array.new_int()
+var bool[]  oUsed = array.new_bool()
+
+buscarOrigen(esAlcista) =>
+    int k = -1
+    for i = 1 to obLookback
+        if k == -1
+            bool opuesta = esAlcista ? close[i] < open[i] : close[i] > open[i]
+            if opuesta
+                k := i
+    k
+
+validarOB(esAlcista, k) =>
+    bool ok = k >= 1
+    if ok and useDisp
+        float impulso = esAlcista ? close - open[k - 1] : open[k - 1] - close
+        ok := impulso >= atr * dispMult
+    if ok and useFvg
+        bool hayFvg = false
+        if k >= 2
+            for j = k to 2
+                if not hayFvg
+                    hayFvg := esAlcista ? low[j - 2] > high[j] : high[j - 2] < low[j]
+        ok := hayFvg
+    ok
+
+crearOB(esAlcista, k) =>
+    float t   = obZone == "Cuerpo" ? math.max(open[k], close[k]) : high[k]
+    float b   = obZone == "Cuerpo" ? math.min(open[k], close[k]) : low[k]
+    color col = esAlcista ? bullCol : bearCol
+    box bx = box.new(bar_index - k, t, bar_index + obExtend, b, border_color=color.new(col, 30), border_width=1, bgcolor=color.new(col, obTransp))
+    array.push(oBx, bx)
+    array.push(oTop, t)
+    array.push(oBot, b)
+    array.push(oDir, esAlcista ? 1 : -1)
+    array.push(oUsed, false)
+
+// ── Paso 1: extender los bloques vivos y dar de baja los mitigados ───────────
+if array.size(oBx) > 0
+    for i = array.size(oBx) - 1 to 0
+        float t  = array.get(oTop, i)
+        float b  = array.get(oBot, i)
+        int   d  = array.get(oDir, i)
+        box   bx = array.get(oBx, i)
+        bool anulado = d == 1 ? (mitMode == "Cierre" ? close < b : low < b) : (mitMode == "Cierre" ? close > t : high > t)
+        if anulado
+            color col = d == 1 ? bullCol : bearCol
+            box.set_bgcolor(bx, color.new(col, math.min(99, obTransp + 12)))
+            box.set_border_color(bx, color.new(col, 55))
+            box.set_border_style(bx, line.style_dashed)
+            array.remove(oBx, i)
+            array.remove(oTop, i)
+            array.remove(oBot, i)
+            array.remove(oDir, i)
+            array.remove(oUsed, i)
+        else
+            box.set_right(bx, bar_index + obExtend)
+
+// ── Paso 2: crear los bloques que deja la ruptura de esta vela ───────────────
+if bosUp
+    int k = buscarOrigen(true)
+    if validarOB(true, k)
+        crearOB(true, k)
+
+if bosDn
+    int k = buscarOrigen(false)
+    if validarOB(false, k)
+        crearOB(false, k)
+
+while array.size(oBx) > maxOB
+    box.delete(array.shift(oBx))
+    array.shift(oTop)
+    array.shift(oBot)
+    array.shift(oDir)
+    array.shift(oUsed)
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  CONFLUENCIA: el precio vuelve a un bloque virgen del lado de la tendencia
+// ─────────────────────────────────────────────────────────────────────────────
+tol = atr * tolMult
+
+int   idxZona = -1
+float zonaTop = na
+float zonaBot = na
+
+if (longOk or shortOk) and confirmado and array.size(oBx) > 0
+    int lado = longOk ? 1 : -1
+    for i = array.size(oBx) - 1 to 0
+        if idxZona == -1 and array.get(oDir, i) == lado and not array.get(oUsed, i)
+            float t = array.get(oTop, i)
+            float b = array.get(oBot, i)
+            if low <= t + tol and high >= b - tol
+                idxZona := i
+                zonaTop := t
+                zonaBot := b
+
+var int ultEntrada = -100000
+esperaOk = bar_index - ultEntrada > cooldown
+
+float entrada  = close
+float stop     = na
+float objetivo = na
+
+if idxZona >= 0
+    stop := longOk ? zonaBot - atr * slBuf : zonaTop + atr * slBuf
+    objetivo := longOk ? entrada + (entrada - stop) * rr : entrada - (stop - entrada) * rr
+
+// nz() evita arrastrar na cuando no hay zona: el riesgo queda en 0 y la
+// operacion se descarta sola.
+stopSeguro = nz(stop, entrada)
+objSeguro  = nz(objetivo, entrada)
+riesgoPct  = math.abs(entrada - stopSeguro) / entrada * 100
+riesgoOk   = riesgoPct >= minRiskPct and riesgoPct <= maxRiskPct
+
+// El stop tiene que quedar del lado correcto del precio.
+coherente = longOk ? stopSeguro < entrada and objSeguro > entrada : stopSeguro > entrada and objSeguro < entrada
+
+entradaLong  = idxZona >= 0 and longOk  and riesgoOk and esperaOk and coherente
+entradaShort = idxZona >= 0 and shortOk and riesgoOk and esperaOk and coherente
+
+if entradaLong or entradaShort
+    ultEntrada := bar_index
+    array.set(oUsed, idxZona, true)
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  DIBUJO DE LA OPERACION
+// ─────────────────────────────────────────────────────────────────────────────
+var line[]  opLines  = array.new_line()
+var label[] opLabels = array.new_label()
+
+limpiarOperacion() =>
+    while array.size(opLines) > 0
+        line.delete(array.pop(opLines))
+    while array.size(opLabels) > 0
+        label.delete(array.pop(opLabels))
+
+nivelOperacion(precio, texto, col, punteada) =>
+    line ln = line.new(bar_index, precio, bar_index + levelBars, precio, color=col, width=1, style=punteada ? line.style_dashed : line.style_solid)
+    label lb = label.new(bar_index + levelBars, precio, texto + "  " + str.tostring(precio, format.mintick), style=label.style_label_left, color=color.new(col, 15), textcolor=color.white, size=size.tiny)
+    array.push(opLines, ln)
+    array.push(opLabels, lb)
+
+if entradaLong or entradaShort
+    limpiarOperacion()
+    color col = entradaLong ? bullCol : bearCol
+    nivelOperacion(entrada,  "ENTRY", color.new(color.silver, 0), false)
+    nivelOperacion(stop,     "SL",    bearCol, true)
+    nivelOperacion(objetivo, "TP " + str.tostring(rr, "#.#") + "R", bullCol, true)
+    label.new(bar_index, entradaLong ? low - atr * 0.9 : high + atr * 0.9, (entradaLong ? "LONG" : "SHORT") + " 1:" + str.tostring(rr, "#.#") + "\n" + str.tostring(entrada, format.mintick), style=entradaLong ? label.style_label_up : label.style_label_down, color=col, textcolor=color.white, size=size.normal, tooltip="Retroceso al Order Block con la tendencia a favor")
+
+// Cambios de tendencia, solo como referencia visual.
+plotshape(flipUp and not entradaLong,  title="Giro alcista", style=shape.triangleup,   location=location.belowbar, color=color.new(bullCol, 50), size=size.tiny)
+plotshape(flipDn and not entradaShort, title="Giro bajista", style=shape.triangledown, location=location.abovebar, color=color.new(bearCol, 50), size=size.tiny)
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  PANEL
+// ─────────────────────────────────────────────────────────────────────────────
+var table panel = table.new(position.top_right, 2, 5, border_width=1, frame_color=color.new(color.gray, 60), frame_width=1)
+
+fila(i, k, v, cv) =>
+    color fondo = color.new(color.black, 15)
+    table.cell(panel, 0, i, k, text_color=color.new(color.white, 25), text_size=size.small, bgcolor=fondo, text_halign=text.align_left)
+    table.cell(panel, 1, i, v, text_color=cv, text_size=size.small, bgcolor=fondo, text_halign=text.align_right)
+
+if barstate.islast
+    fila(0, "CONFLUENCE 1:" + str.tostring(rr, "#.#"), timeframe.period, color.new(color.white, 0))
+    fila(1, "Tendencia", bull ? "ALCISTA" : "BAJISTA", trendCol)
+    fila(2, "Bloques vivos", str.tostring(array.size(oBx)), color.new(color.white, 20))
+    fila(3, "RSI(" + str.tostring(rsiLen) + ")", str.tostring(rsiVal, "#.0"), rsiVal > rsiMid ? bullCol : bearCol)
+    fila(4, "Estado", esperaOk ? "buscando entrada" : "en pausa", esperaOk ? bullCol : color.gray)
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  ALERTAS
+// ─────────────────────────────────────────────────────────────────────────────
+alertcondition(entradaLong,  "ENTRADA LONG",  "LONG {{ticker}} @ {{close}} ({{interval}})")
+alertcondition(entradaShort, "ENTRADA SHORT", "SHORT {{ticker}} @ {{close}} ({{interval}})")
+
+// JSON para el webhook del bot. Comillas simples afuera para poder escribir
+// comillas dobles adentro.
+json = '{"secret":"' + secret + '",' +
+     '"action":"' + (entradaLong ? "BUY" : "SELL") + '",' +
+     '"symbol":"' + syminfo.ticker + '",' +
+     '"tf":"' + timeframe.period + '",' +
+     '"entry":' + str.tostring(entrada, format.mintick) + ',' +
+     '"sl":' + str.tostring(stop, format.mintick) + ',' +
+     '"tp":' + str.tostring(objetivo, format.mintick) + ',' +
+     '"rr":' + str.tostring(rr, "#.##") + ',' +
+     '"risk_pct":' + str.tostring(qtyPct, "#.##") + '}'
+
+if entradaLong or entradaShort
+    if confirmClose
+        alert(json, alert.freq_once_per_bar_close)
+    else
+        alert(json, alert.freq_once_per_bar)
