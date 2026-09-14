@@ -415,19 +415,25 @@ del precio. Eso resuelve el problema del costo y crea otro, porque un stop de
 0.667% con objetivo de 1.33% no se resuelve en 5 minutos. Medido en 60-90 días
 de M5:
 
-| activo | ops | op/día | acierto | vs azar | R/op | llegaron al objetivo |
-|---|---|---|---|---|---|---|
-| BTCUSDT | 8 | 0.09 | 25.0% | −2.4 pp | −0.515 | 0 de 8 |
-| ETHUSDT | 11 | 0.12 | 45.5% | +15.1 pp | −0.109 | 0 de 11 |
-| SOLUSDT | 19 | 0.21 | 42.1% | +7.8 pp | −0.047 | 1 de 19 |
-| DOGEUSDT | 20 | 0.22 | 45.0% | +11.9 pp | −0.208 | 1 de 20 |
-| XRPUSDT | 14 | 0.16 | 28.6% | −4.4 pp | −0.189 | 1 de 14 |
-| ADAUSDT | 40 | 0.44 | 32.5% | −5.2 pp | −0.337 | 1 de 40 |
+| activo | ops | op/día | acierto | vs azar | margen de error | R/op | llegaron al objetivo |
+|---|---|---|---|---|---|---|---|
+| BTCUSDT | 8 | 0.09 | 25.0% | −2.4 pp | ±16.6 | −0.515 | 0 de 8 |
+| ETHUSDT | 11 | 0.12 | 45.5% | +15.1 pp | ±14.2 | −0.109 | 0 de 11 |
+| SOLUSDT | 19 | 0.21 | 42.1% | +7.8 pp | ±10.8 | −0.047 | 1 de 19 |
+| DOGEUSDT | 20 | 0.22 | 45.0% | +11.9 pp | ±10.5 | −0.208 | 1 de 20 |
+| XRPUSDT | 14 | 0.16 | 28.6% | −4.4 pp | ±12.6 | −0.189 | 1 de 14 |
+| ADAUSDT | 40 | 0.44 | 32.5% | −5.2 pp | ±7.4 | −0.337 | 1 de 40 |
 
-**De 112 operaciones, 5 llegaron al objetivo.** Y entre 0.09 y 0.44 operaciones
-por día, cuando querías entre 3 y 5. El bot no puede "entrar y salir
-continuamente" porque casi nunca se dan las condiciones que dejan un stop lo
-bastante ancho para pagar la comisión.
+Puse la columna del margen de error a propósito, porque sin ella la tabla miente:
+el +15.1 de ETH parece un hallazgo y está dentro de ±14.2, o sea que es ruido.
+**Con menos de 30 operaciones no se puede afirmar nada**, y el panel ahora se
+niega a dar veredicto por debajo de ese número en lugar de inventar uno.
+
+Lo que sí se sostiene son los dos hechos que no dependen del tamaño de la
+muestra: **de 112 operaciones, 5 llegaron al objetivo**, y salieron entre 0.09 y
+0.44 operaciones por día cuando querías entre 3 y 5. El bot no puede "entrar y
+salir continuamente" porque casi nunca se dan las condiciones que dejan un stop
+lo bastante ancho para pagar la comisión.
 
 ### El límite de tiempo no es gratis: cuesta 0.34 R
 
@@ -546,6 +552,13 @@ mismo stop. Un tablero con cinco luces verdes no dice nada; lo que decide es esa
 comparación. Es la herramienta que hubiera ahorrado la mitad del trabajo de este
 proyecto, y sirve para cualquier idea que se te ocurra de acá en adelante,
 incluidas las que yo no probé.
+
+Trae el margen de error al lado de cada resultado y **no da veredicto con menos de
+30 operaciones**. Cerca de un tercio de acierto, el error típico de la medición es
+de unos 47/√n puntos: con 30 operaciones son 8.6 puntos y con 100 son 4.7. Como la
+ventaja que buscamos es de 4 o 5 puntos, cualquier medición chica es indistinguible
+del azar por construcción. Es la trampa en la que caen casi todos los backtests
+que se ven en internet: 20 operaciones, 60% de acierto y una conclusión.
 
 ## Instalación en Termux
 

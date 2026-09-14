@@ -203,6 +203,8 @@ def medir(simbolo, tf, mod, cfg, dias=30):
             "teorico": round(veredicto["teorico"], 1),
             "r_op": round(veredicto["r_op_azar"], 3),
             "ventaja_pp": round(veredicto["ventaja_pp"], 1),
+            "margen_error": round(veredicto["margen_error"], 1),
+            "suficiente": veredicto["muestra_suficiente"],
             "costo_en_r": round(veredicto["costo_en_r"], 2),
             "veredicto": veredicto["veredicto"],
         }
@@ -358,8 +360,9 @@ async function medir(simbolo) {
   const d = await r.json();
   if (d.mensaje) { caja.innerHTML = `<div class="detalle">${d.mensaje}</div>`; return; }
   const a = d.azar || {};
-  const clase = a.ventaja_pp === undefined ? "medio"
-              : a.ventaja_pp <= 0 ? "malo" : a.ventaja_pp > 3 ? "bueno" : "medio";
+  const clase = a.ventaja_pp === undefined || a.suficiente === false ? "medio"
+              : a.ventaja_pp <= 0 ? "malo"
+              : a.ventaja_pp > a.margen_error ? "bueno" : "medio";
   const salidas = Object.entries(d.salidas || {})
         .map(([k, v]) => `${k} ${v}`).join(" · ");
   caja.innerHTML = `<table>
@@ -371,8 +374,9 @@ async function medir(simbolo) {
     <tr><td>acierto</td><td>${num(d.acierto,1)}%</td></tr>
     <tr><td>acierto entrando al azar</td><td>${num(a.acierto,1)}%
         (teoria ${num(a.teorico,1)}%)</td></tr>
-    <tr><td><b>vs azar</b></td><td class="${signo(a.ventaja_pp)}">
-        <b>${a.ventaja_pp>0?'+':''}${num(a.ventaja_pp,1)} puntos</b></td></tr>
+    <tr><td><b>vs azar</b></td><td class="${a.suficiente===false?'':signo(a.ventaja_pp)}">
+        <b>${a.ventaja_pp>0?'+':''}${num(a.ventaja_pp,1)} puntos</b>
+        <span class="detalle">± ${num(a.margen_error,1)} de error</span></td></tr>
     <tr><td>R por operacion</td><td class="${signo(d.r_op)}">
         ${d.r_op>0?'+':''}${num(d.r_op,3)} R</td></tr>
     <tr><td>total / peor caida</td><td>${num(d.total_r,1)} R /

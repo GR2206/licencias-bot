@@ -106,18 +106,36 @@ def comparar(ops, velas, rr, costo_pct=0.0, minutos_max=0, minutos_vela=5):
     r_op = statistics.fmean(erres)
     ventaja = acierto - ref["acierto"]
 
-    if ventaja > 3 and r_op > 0:
-        veredicto = "le gana al azar; con esta muestra todavia puede ser suerte"
+    # Con pocas operaciones no se puede decir nada, y decirlo igual seria peor que
+    # no medir. El error tipico de una proporcion cerca de 1/3 es de unos 47/raiz(n)
+    # puntos: con 30 operaciones son 8.6 puntos, con 100 son 4.7. Por eso hasta 30
+    # no hay veredicto, y de ahi en adelante se exige que la ventaja supere ese
+    # error antes de llamarla ventaja.
+    minimo = 30
+    error = 47.0 / (len(erres) ** 0.5)
+
+    if len(erres) < minimo:
+        cuantas = "1 operacion" if len(erres) == 1 else f"{len(erres)} operaciones"
+        veredicto = (f"solo {cuantas}: no alcanza para decir nada. Hacen falta "
+                     f"{minimo} como minimo, y con esta muestra el margen de error "
+                     f"es de {error:.0f} puntos")
+    elif ventaja > error and r_op > 0:
+        veredicto = (f"le gana al azar por {ventaja:.1f} puntos, mas que el margen "
+                     f"de error de {error:.0f}. Es el unico caso que vale la pena "
+                     f"seguir mirando: probalo en otros activos y otro periodo")
     elif ventaja > 0:
-        veredicto = "empata con el azar: lo que ganes se lo lleva la comision"
+        veredicto = (f"le gana por {ventaja:.1f} puntos pero el margen de error es "
+                     f"{error:.0f}: es indistinguible del azar")
     else:
-        veredicto = "PIERDE contra el azar: la logica elige los peores momentos"
+        veredicto = (f"PIERDE contra el azar por {abs(ventaja):.1f} puntos: la "
+                     f"logica esta eligiendo los peores momentos")
 
     return {
         "ops": len(erres), "stop_tipico": stop_tipico,
         "acierto": acierto, "r_op": r_op,
         "acierto_azar": ref["acierto"], "r_op_azar": ref["r_op"],
         "teorico": ref["teorico"], "ventaja_pp": ventaja,
+        "margen_error": error, "muestra_suficiente": len(erres) >= minimo,
         "costo_en_r": costo_pct / stop_tipico if stop_tipico else 0.0,
         "veredicto": veredicto,
     }
