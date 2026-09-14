@@ -385,7 +385,12 @@ async function medir(simbolo) {
   </table><div class="veredicto ${clase}">${a.veredicto || "sin referencia"}</div>`;
 }
 
-cargar();
+// Con ?medir=ADAUSDT el panel abre con la medicion ya hecha. Sirve para
+// guardarse un enlace del activo que estas mirando.
+cargar().then(() => {
+  const pedido = new URLSearchParams(location.search).get("medir");
+  if (pedido) medir(pedido.toUpperCase());
+});
 setInterval(cargar, 60000);
 </script></body></html>
 """

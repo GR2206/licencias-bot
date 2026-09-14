@@ -26,7 +26,7 @@ import random
 import statistics
 
 
-def al_azar(velas, stop_pct, rr, lado=0, muestras=3000, minutos_max=0,
+def al_azar(velas, stop_pct, rr, lado=0, muestras=20000, minutos_max=0,
             minutos_vela=5, costo_pct=0.0, semilla=7):
     """Entra en momentos al azar con el mismo stop y objetivo que tu estrategia.
 
@@ -97,7 +97,10 @@ def comparar(ops, velas, rr, costo_pct=0.0, minutos_max=0, minutos_vela=5):
     erres = [campo(o, "r", 0) for o in ops]
     stop_tipico = statistics.median(stops)
 
-    ref = al_azar(velas, stop_tipico, rr, muestras=3000, minutos_max=minutos_max,
+    # 20000 muestras dejan la referencia con un desvio de ~0.4 puntos y tardan
+    # 0.03 s, asi que la vara no tiembla. El ruido que queda en la comparacion es
+    # el de TU muestra, que con 40 operaciones es de +/-7 puntos.
+    ref = al_azar(velas, stop_tipico, rr, muestras=20000, minutos_max=minutos_max,
                   minutos_vela=minutos_vela, costo_pct=costo_pct)
     if not ref:
         return None
@@ -118,17 +121,26 @@ def comparar(ops, velas, rr, costo_pct=0.0, minutos_max=0, minutos_vela=5):
         cuantas = "1 operacion" if len(erres) == 1 else f"{len(erres)} operaciones"
         veredicto = (f"solo {cuantas}: no alcanza para decir nada. Hacen falta "
                      f"{minimo} como minimo, y con esta muestra el margen de error "
-                     f"es de {error:.0f} puntos")
-    elif ventaja > error and r_op > 0:
+                     f"es de {error:.1f} puntos")
+    elif abs(ventaja) <= error:
+        # El margen se aplica para los dos lados. Una diferencia mas chica que el
+        # error no dice nada, ni a favor ni en contra, y afirmar lo contrario
+        # seria el mismo error que celebrar un backtest de 20 operaciones.
+        veredicto = (f"empata con el azar: la diferencia de {ventaja:+.1f} puntos "
+                     f"es menor que el margen de error de {error:.1f}. Lo que "
+                     f"ganes se lo lleva la comision")
+    elif ventaja > 0 and r_op > 0:
         veredicto = (f"le gana al azar por {ventaja:.1f} puntos, mas que el margen "
-                     f"de error de {error:.0f}. Es el unico caso que vale la pena "
+                     f"de error de {error:.1f}. Es el unico caso que vale la pena "
                      f"seguir mirando: probalo en otros activos y otro periodo")
     elif ventaja > 0:
-        veredicto = (f"le gana por {ventaja:.1f} puntos pero el margen de error es "
-                     f"{error:.0f}: es indistinguible del azar")
+        veredicto = (f"acierta {ventaja:.1f} puntos mas que el azar pero igual "
+                     f"pierde {abs(r_op):.3f} R por operacion: la comision se "
+                     f"come la diferencia")
     else:
-        veredicto = (f"PIERDE contra el azar por {abs(ventaja):.1f} puntos: la "
-                     f"logica esta eligiendo los peores momentos")
+        veredicto = (f"PIERDE contra el azar por {abs(ventaja):.1f} puntos, mas "
+                     f"que el margen de error de {error:.1f}: la logica esta "
+                     f"eligiendo los peores momentos")
 
     return {
         "ops": len(erres), "stop_tipico": stop_tipico,

@@ -424,11 +424,18 @@ de M5:
 | XRPUSDT | 14 | 0.16 | 0.911% | 28.6% | 35.2% | −6.6 pp | ±12.6 | −0.189 | 1 de 14 |
 | ADAUSDT | 39 | 0.43 | 0.824% | 30.8% | 40.3% | −9.5 pp | ±7.5 | −0.321 | 1 de 39 |
 
-Es la salida literal del botón **medir** del panel, así que lo podés reproducir
-vos mismo. Puse la columna del margen de error a propósito, porque sin ella la
-tabla miente: el +12.9 de ETH parece un hallazgo y está dentro de ±14.2, o sea
-que es ruido. **Con menos de 30 operaciones no se puede afirmar nada**, y el
-panel se niega a dar veredicto por debajo de ese número en lugar de inventar uno.
+Es la salida del botón **medir** del panel, así que lo podés reproducir vos
+mismo. Puse la columna del margen de error a propósito, porque sin ella la tabla
+miente: el +12.9 de ETH parece un hallazgo y está dentro de ±14.2, o sea que es
+ruido. **Con menos de 30 operaciones no se puede afirmar nada**, y el panel se
+niega a dar veredicto por debajo de ese número en lugar de inventar uno.
+
+Si lo corrés vos, la columna *vs azar* te va a dar unos puntos distinta a esta
+tabla, y ADAUSDT puede pasar de "pierde" a "empata" según el día. No es que la
+medición esté mal: es exactamente lo que significa un margen de ±7 puntos sobre
+40 operaciones. **Ninguna conclusión por activo se sostiene acá**, y esa es la
+conclusión. Lo que sí se repite en todas las corridas es que el objetivo casi
+nunca se toca.
 
 Lo que sí se sostiene son los dos hechos que no dependen del tamaño de la
 muestra: **de 111 operaciones, 4 llegaron al objetivo**, y salieron entre 0.09 y
