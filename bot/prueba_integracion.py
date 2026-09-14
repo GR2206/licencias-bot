@@ -64,6 +64,9 @@ class ClienteFalso(api.Cliente):
     def posicion(self, simbolo):
         return self.posicion_actual
 
+    def posiciones(self):
+        return {"MOCK": self.posicion_actual} if self.posicion_actual else {}
+
     def saldo_usdt(self):
         return SALDO
 

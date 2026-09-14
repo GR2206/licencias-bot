@@ -70,6 +70,9 @@ class Ajustes:
         self.intervalo = int(os.getenv("INTERVALO_SEGUNDOS", "30"))
         self.velas = int(os.getenv("VELAS", "500"))
         self.saldo_simulado = float(os.getenv("SALDO_SIMULADO", "1000"))
+        # Pausa entre pedidos dentro de un barrido, para no mandarle a Binance
+        # veinte pedidos en la misma decima de segundo.
+        self.pausa_pedidos = float(os.getenv("PAUSA_PEDIDOS", "0.15"))
         # El RR y el resto de la estrategia se leen en config_estrategia().
 
     @property
@@ -79,6 +82,34 @@ class Ajustes:
     @property
     def en_vivo(self):
         return self.modo == "real"
+
+
+MINUTOS_TF = {"1m": 1, "3m": 3, "5m": 5, "15m": 15, "30m": 30,
+              "1h": 60, "2h": 120, "4h": 240, "6h": 360, "12h": 720, "1d": 1440}
+
+
+def vela_cerrada(temporalidad, ahora_ms=None):
+    """Apertura de la ultima vela ya cerrada de esa temporalidad.
+
+    Sirve para revisar una sola vez por vela. Con un simbolo da igual, pero con
+    veinte y tres temporalidades, revisar cada 30 segundos son cientos de
+    pedidos por minuto que no aportan nada: la senal no puede cambiar hasta que
+    cierre la vela siguiente.
+    """
+    ms = MINUTOS_TF[temporalidad] * 60_000
+    ahora = int(time.time() * 1000) if ahora_ms is None else ahora_ms
+    return (ahora // ms) * ms - ms
+
+
+def peso_klines(velas):
+    """Peso que le cobra Binance a un pedido de velas segun el limite."""
+    if velas <= 100:
+        return 1
+    if velas <= 500:
+        return 2
+    if velas <= 1000:
+        return 5
+    return 10
 
 
 def avisos_ventana(ajustes, cfg):
@@ -107,6 +138,16 @@ def avisos_ventana(ajustes, cfg):
 
     if ajustes.velas > 1500:
         avisos.append(f"Binance entrega 1500 velas como maximo, VELAS={ajustes.velas} se recorta")
+
+    # Peso de un barrido completo. El limite de Binance son 2400 por minuto.
+    pedidos = len(ajustes.simbolos) * len(ajustes.temporalidades)
+    peso = pedidos * peso_klines(ajustes.velas)
+    if peso > 1200:
+        avisos.append(
+            f"Un barrido de {pedidos} pedidos con VELAS={ajustes.velas} pesa {peso} "
+            f"y el limite de Binance son 2400 por minuto. Bajá VELAS a 500 "
+            f"(alcanza con EDAD_MAX_BLOQUE={cfg.edad_max_bloque}) o usá menos simbolos"
+        )
     return avisos
 
 
@@ -317,7 +358,13 @@ def gestionar_posiciones(cliente, ajustes, estado):
                 registrar("  ERROR moviendo el stop, revisá a mano:", e)
 
 
-def revisar(cliente, ajustes, simbolo, temporalidad, cfg, estado):
+def revisar(cliente, ajustes, simbolo, temporalidad, cfg, estado, posiciones=None):
+    """Revisa un simbolo en una temporalidad y opera si hay senal.
+
+    `posiciones` es el mapa de posiciones abiertas ya leido afuera. Con muchos
+    simbolos importa: preguntar una por una son 25 pedidos firmados por señal,
+    y en un solo pedido vienen todas.
+    """
     clave = f"{simbolo}:{temporalidad}"
     try:
         crudas = cliente.klines(simbolo, temporalidad, ajustes.velas)
@@ -351,11 +398,12 @@ def revisar(cliente, ajustes, simbolo, temporalidad, cfg, estado):
         saldo = ajustes.saldo_simulado
     else:
         try:
-            if abs(cliente.posicion(simbolo)) > 0:
+            if posiciones is None:
+                posiciones = cliente.posiciones()
+            if abs(posiciones.get(simbolo, 0.0)) > 0:
                 registrar(f"  Ya hay posicion abierta en {simbolo}, no hago nada")
                 return
-            abiertas = sum(1 for s in ajustes.simbolos if abs(cliente.posicion(s)) > 0)
-            if abiertas >= ajustes.max_posiciones:
+            if len(posiciones) >= ajustes.max_posiciones:
                 registrar(f"  Limite de {ajustes.max_posiciones} posiciones alcanzado")
                 return
             saldo = cliente.saldo_usdt()
@@ -368,7 +416,11 @@ def revisar(cliente, ajustes, simbolo, temporalidad, cfg, estado):
         registrar("  Operacion descartada:", motivo)
         return
 
-    ejecutar(cliente, ajustes, simbolo, senal, cantidad, cfg, estado)
+    if ejecutar(cliente, ajustes, simbolo, senal, cantidad, cfg, estado):
+        # Que el resto del barrido sepa que esta posicion ya existe, si no el
+        # limite de posiciones se pasa de largo dentro de la misma pasada.
+        if posiciones is not None:
+            posiciones[simbolo] = cantidad if senal.es_compra else -cantidad
 
 
 def main():
@@ -415,18 +467,40 @@ def main():
             registrar("No pude leer el saldo (revisá las claves):", e)
 
     estado = leer_estado()
+    vistas = {}  # temporalidad -> ultima vela cerrada ya revisada
     while True:
         try:
             gestionar_posiciones(cliente, ajustes, estado)
         except Exception as e:
             registrar("Error gestionando posiciones:", repr(e))
 
-        for simbolo in ajustes.simbolos:
-            for temporalidad in ajustes.temporalidades:
+        # Solo tiene sentido revisar una temporalidad cuando cerro una vela nueva.
+        pendientes = []
+        for temporalidad in ajustes.temporalidades:
+            cerrada = vela_cerrada(temporalidad)
+            if vistas.get(temporalidad) != cerrada:
+                pendientes.append((temporalidad, cerrada))
+
+        if pendientes:
+            posiciones = None
+            if ajustes.api_key:
                 try:
-                    revisar(cliente, ajustes, simbolo, temporalidad, cfg, estado)
-                except Exception as e:  # el bot no se muere por un error puntual
-                    registrar(f"Error inesperado en {simbolo}:{temporalidad}:", repr(e))
+                    posiciones = cliente.posiciones()
+                except api.ErrorBinance as e:
+                    registrar("No pude leer las posiciones abiertas:", e)
+
+            for temporalidad, cerrada in pendientes:
+                momento = datetime.fromtimestamp(cerrada / 1000, timezone.utc)
+                registrar(f"Vela {temporalidad} cerrada ({momento:%Y-%m-%d %H:%M} UTC), "
+                          f"reviso {len(ajustes.simbolos)} simbolos")
+                for simbolo in ajustes.simbolos:
+                    try:
+                        revisar(cliente, ajustes, simbolo, temporalidad, cfg, estado, posiciones)
+                    except Exception as e:  # el bot no se muere por un error puntual
+                        registrar(f"Error inesperado en {simbolo}:{temporalidad}:", repr(e))
+                    time.sleep(ajustes.pausa_pedidos)
+                vistas[temporalidad] = cerrada
+
         time.sleep(ajustes.intervalo)
 
 

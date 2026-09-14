@@ -53,8 +53,11 @@ class Config:
     #   "vela"         -> la vela tiene que cerrar a favor (reaccion visible)
     #   "cierre_fuera" -> ademas tiene que cerrar de vuelta fuera de la zona
     confirmacion: str = "vela"
-    # Un bloque viejo ya no es informacion fresca. 0 = sin limite.
-    edad_max_bloque: int = 0
+    # Un bloque viejo ya no es informacion fresca. 0 = sin limite, pero ojo: sin
+    # limite un bloque puede ser mas viejo que la ventana de velas que el bot le
+    # pide a Binance, y entonces el bot no lo ve aunque el backtest si. Medido en
+    # CHZ M30 con 500 velas: se perdia 1 de cada 8 senales, en silencio.
+    edad_max_bloque: int = 250
     # El precio tiene que haberse alejado del bloque antes de volver, para que
     # sea un retroceso de verdad y no un arrastre lateral. 0 = no se exige.
     alejarse_atr: float = 1.0

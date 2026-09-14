@@ -145,6 +145,19 @@ class Cliente:
             total += float(p.get("positionAmt", 0) or 0)
         return total
 
+    def posiciones(self):
+        """Todas las posiciones abiertas en un solo pedido: {simbolo: cantidad}.
+
+        Con muchos simbolos preguntar de a uno sale carisimo en peso de API.
+        """
+        datos = self._pedir("GET", "/fapi/v2/positionRisk", firmado=True)
+        abiertas = {}
+        for p in datos:
+            cantidad = float(p.get("positionAmt", 0) or 0)
+            if cantidad:
+                abiertas[p["symbol"]] = abiertas.get(p["symbol"], 0.0) + cantidad
+        return {s: c for s, c in abiertas.items() if c}
+
     def apalancamiento(self, simbolo, x):
         return self._pedir(
             "POST",
