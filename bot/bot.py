@@ -16,6 +16,7 @@ Arranca en MODO=simulacion: registra todo pero no manda ninguna orden.
 Cambialo a real solo despues de verlo funcionar.
 """
 
+import dataclasses
 import json
 import os
 import sys
@@ -68,8 +69,8 @@ class Ajustes:
         self.max_posiciones = int(os.getenv("MAX_POSICIONES", "2"))
         self.intervalo = int(os.getenv("INTERVALO_SEGUNDOS", "30"))
         self.velas = int(os.getenv("VELAS", "500"))
-        self.rr = float(os.getenv("RR", "3"))
         self.saldo_simulado = float(os.getenv("SALDO_SIMULADO", "1000"))
+        # El RR y el resto de la estrategia se leen en config_estrategia().
 
     @property
     def base(self):
@@ -78,6 +79,65 @@ class Ajustes:
     @property
     def en_vivo(self):
         return self.modo == "real"
+
+
+def avisos_ventana(ajustes, cfg):
+    """Revisa que la ventana de velas alcance para lo que pide la estrategia.
+
+    El bot solo ve las ultimas VELAS velas. Si un Order Block util es mas viejo
+    que eso, en vivo no existe, y el bot opera distinto a lo que se probo. Ese
+    desfase es silencioso, asi que conviene avisarlo al arrancar.
+    """
+    avisos = []
+    # Margen para que ATR, SuperTrend y RSI lleguen estabilizados a la zona util.
+    calentamiento = max(200, cfg.atr_periodo * 10, cfg.ema_periodo if cfg.usar_ema else 0)
+
+    if cfg.edad_max_bloque <= 0:
+        if ajustes.velas < 1500:
+            avisos.append(
+                f"EDAD_MAX_BLOQUE=0 (los bloques no caducan) con VELAS={ajustes.velas}. "
+                "Un bloque mas viejo que la ventana no se ve y el bot opera distinto al "
+                "backtest. Poné VELAS=1500 o EDAD_MAX_BLOQUE=250"
+            )
+    elif ajustes.velas < cfg.edad_max_bloque + calentamiento:
+        avisos.append(
+            f"VELAS={ajustes.velas} es corto para EDAD_MAX_BLOQUE={cfg.edad_max_bloque}: "
+            f"hacen falta al menos {cfg.edad_max_bloque + calentamiento}"
+        )
+
+    if ajustes.velas > 1500:
+        avisos.append(f"Binance entrega 1500 velas como maximo, VELAS={ajustes.velas} se recorta")
+    return avisos
+
+
+def config_estrategia():
+    """Arma la Config de la estrategia desde las variables de entorno.
+
+    Cada campo de estrategia.Config se puede sobreescribir con una variable en
+    MAYUSCULAS con el mismo nombre. Por ejemplo RIESGO_MAX_PCT=5 o PIVOTE=3.
+    Asi se puede afinar un activo sin tocar el codigo.
+    """
+    cfg = estrategia.Config()
+    for campo in dataclasses.fields(cfg):
+        crudo = os.getenv(campo.name.upper())
+        if crudo is None or crudo.strip() == "":
+            continue
+        actual = getattr(cfg, campo.name)
+        texto = crudo.strip()
+        try:
+            if isinstance(actual, bool):  # bool antes que int: bool es subclase
+                valor = texto.lower() in ("1", "true", "si", "sí", "yes", "y", "on")
+            elif isinstance(actual, int):
+                valor = int(float(texto))
+            elif isinstance(actual, float):
+                valor = float(texto)
+            else:
+                valor = texto
+        except ValueError:
+            registrar(f"Valor invalido para {campo.name.upper()}: {texto!r}, lo ignoro")
+            continue
+        setattr(cfg, campo.name, valor)
+    return cfg
 
 
 def registrar(*partes):
@@ -314,7 +374,7 @@ def revisar(cliente, ajustes, simbolo, temporalidad, cfg, estado):
 def main():
     cargar_env()
     ajustes = Ajustes()
-    cfg = estrategia.Config(rr=ajustes.rr)
+    cfg = config_estrategia()
 
     registrar("=" * 62)
     registrar("Bot de confluencia — Tendencia + Order Block")
@@ -322,8 +382,19 @@ def main():
     registrar(f"  Modo          : {'REAL, manda ordenes' if ajustes.en_vivo else 'simulacion'}")
     registrar(f"  Simbolos      : {', '.join(ajustes.simbolos)}")
     registrar(f"  Temporalidades: {', '.join(ajustes.temporalidades)}")
-    registrar(f"  Riesgo        : {ajustes.riesgo_pct}% por operacion, RR 1:{ajustes.rr}")
+    registrar(f"  Riesgo        : {ajustes.riesgo_pct}% de la cuenta por operacion")
     registrar(f"  Apalancamiento: x{ajustes.apalancamiento}")
+    registrar(
+        f"  Estrategia    : RR 1:{cfg.rr} | stop {cfg.sl_modo} | "
+        f"riesgo permitido {cfg.riesgo_min_pct}-{cfg.riesgo_max_pct}% del precio"
+    )
+    registrar(
+        f"                  pivote {cfg.pivote} | FVG {'si' if cfg.exigir_fvg else 'no'} | "
+        f"alejarse {cfg.alejarse_atr} ATR | confirmacion {cfg.confirmacion} | "
+        f"parcial {'si' if cfg.parcial_1r else 'no'}"
+    )
+    for aviso in avisos_ventana(ajustes, cfg):
+        registrar(f"  AVISO: {aviso}")
     registrar("=" * 62)
 
     if ajustes.en_vivo and ajustes.entorno == "real":
