@@ -25,10 +25,24 @@ import sys
 from datetime import datetime, timezone
 
 import binance_api as api
+import bot
 import estrategia
 import indicadores as ind
 
 COMISION_IDA_VUELTA = 0.10  # % del nocional
+
+
+def precio(valor):
+    """Formatea con decimales utiles: BTC no necesita 8, CHZ sin 5 no se lee."""
+    if valor >= 100:
+        ancho = 2
+    elif valor >= 1:
+        ancho = 4
+    elif valor >= 0.01:
+        ancho = 6
+    else:
+        ancho = 8
+    return f"{valor:>11.{ancho}f}"
 
 
 def resultado(velas, s, cfg):
@@ -77,12 +91,26 @@ def main():
     limite = int(argumentos[2]) if len(argumentos) > 2 else 1000
     base = api.TESTNET if "--testnet" in sys.argv else api.REAL
 
-    cfg = estrategia.Config()
+    # Se usa el mismo config.env que el bot: si no, se estaria probando una
+    # estrategia distinta a la que va a operar.
+    bot.cargar_env()
+    cfg = bot.config_estrategia()
     if "--sin-parcial" in sys.argv:
         cfg.parcial_1r = False
 
     cliente = api.Cliente(base=base)
-    velas = ind.desde_klines(cliente.klines(simbolo, temporalidad, limite))[:-1]
+    try:
+        crudas = cliente.klines(simbolo, temporalidad, limite)
+    except api.ErrorBinance as e:
+        print(f"No pude bajar el historial: {e}")
+        if "451" in str(e):
+            print(
+                "\nEl 451 es geobloqueo de Binance, no un problema del bot. Desde el\n"
+                "celular con tu conexion habitual deberia funcionar. Si no, probá\n"
+                "--testnet (datos con huecos, solo para ver la mecanica)."
+            )
+        return
+    velas = ind.desde_klines(crudas)[:-1]
     if not velas:
         print("No vinieron velas.")
         return
@@ -95,6 +123,10 @@ def main():
     print(f"{simbolo} {temporalidad} — {len(velas)} velas")
     print(f"desde {desde:%Y-%m-%d %H:%M} hasta {hasta:%Y-%m-%d %H:%M} (UTC)")
     print(f"RR 1:{cfg.rr}  |  parcial en 1R: {'si' if cfg.parcial_1r else 'no'}")
+    print(
+        f"stop {cfg.sl_modo}  |  riesgo permitido {cfg.riesgo_min_pct}-{cfg.riesgo_max_pct}% "
+        f"del precio  |  pivote {cfg.pivote}  |  bloques caducan a {cfg.edad_max_bloque or '∞'} velas"
+    )
     print("=" * 78)
 
     if not lista:
@@ -119,8 +151,8 @@ def main():
                 negativas += 1
             texto_r = f"{r:+5.2f}R"
         print(
-            f"{momento:%Y-%m-%d %H:%M}  {s.accion:<4} entrada {s.entrada:>11.4f}  "
-            f"SL {s.stop:>11.4f}  TP {s.objetivo:>11.4f}  "
+            f"{momento:%Y-%m-%d %H:%M}  {s.accion:<4} entrada {precio(s.entrada)}  "
+            f"SL {precio(s.stop)}  TP {precio(s.objetivo)}  "
             f"riesgo {s.riesgo_pct:>4.2f}%  {texto_r}  {etiqueta}"
         )
 

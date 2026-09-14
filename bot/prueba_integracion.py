@@ -8,8 +8,13 @@ mandarlas, y verifica lo que de verdad importa:
   3. Que el tamano de la posicion respete el riesgo configurado.
   4. Que al cobrarse la parcial el stop se mueva a la entrada.
 
+Los filtros (tick, paso de lote, minimos) se piden a Binance para el simbolo
+que se pruebe, asi que el redondeo que se verifica es el de verdad.
+
 Uso:
-    python prueba_integracion.py
+    python prueba_integracion.py                 # BTCUSDT 1h
+    python prueba_integracion.py CHZUSDT 1h
+    python prueba_integracion.py CHZUSDT 30m
 """
 
 import sys
@@ -23,6 +28,18 @@ SALDO = 1000.0
 RIESGO_PCT = 1.0
 
 
+def cliente_publico():
+    """Devuelve un cliente que llegue al mercado: primero real, si no testnet."""
+    for base, nombre in ((api.REAL, "real"), (api.TESTNET, "testnet")):
+        c = api.Cliente(base=base)
+        try:
+            c.klines("BTCUSDT", "1h", 5)
+            return c, nombre
+        except Exception:
+            continue
+    raise SystemExit("No pude llegar a Binance para bajar velas.")
+
+
 def a_klines(velas):
     return [
         [v.tiempo, str(v.apertura), str(v.maximo), str(v.minimo), str(v.cierre), str(v.volumen)]
@@ -31,9 +48,10 @@ def a_klines(velas):
 
 
 class ClienteFalso(api.Cliente):
-    def __init__(self, velas):
+    def __init__(self, velas, filtros):
         super().__init__(base=api.TESTNET)
         self._velas = velas
+        self._filtros = filtros
         self.ordenes = []
         self.posicion_actual = 0.0
 
@@ -41,7 +59,7 @@ class ClienteFalso(api.Cliente):
         return a_klines(self._velas[-limite:])
 
     def filtros(self, simbolo):
-        return {"tick": 0.1, "paso": 0.001, "min_qty": 0.001, "min_notional": 5.0}
+        return self._filtros
 
     def posicion(self, simbolo):
         return self.posicion_actual
@@ -74,16 +92,28 @@ class ClienteFalso(api.Cliente):
         return {}
 
 
-def main():
-    cfg = estrategia.Config()
+def main(argv):
+    simbolo = argv[1].upper() if len(argv) > 1 else "BTCUSDT"
+    intervalo = argv[2] if len(argv) > 2 else "1h"
 
-    print("Bajando velas del testnet para buscar una senal historica...")
-    publico = api.Cliente(base=api.TESTNET)
-    velas = ind.desde_klines(publico.klines("BTCUSDT", "1h", 1500))[:-1]
+    # Si hay un config.env con parametros de estrategia, se usa ese.
+    bot.cargar_env()
+    cfg = bot.config_estrategia()
+
+    publico, donde = cliente_publico()
+    filtros = publico.filtros(simbolo)
+    print(f"Probando {simbolo} {intervalo} con velas de Binance ({donde})")
+    print(f"  filtros reales: {filtros}")
+
+    velas = ind.desde_klines(publico.klines(simbolo, intervalo, 1500))[:-1]
     lista = estrategia.senales(velas, cfg)
     print(f"  {len(velas)} velas, {len(lista)} senales encontradas")
     if not lista:
-        print("No aparecieron senales en este tramo. Probá de nuevo mas tarde.")
+        print(
+            "No aparecieron senales en este tramo, asi que no hay nada que probar.\n"
+            "Con la configuracion de CHZ es normal: sale una operacion cada ~7 dias.\n"
+            "Probá con otra temporalidad o con BTCUSDT para validar la mecanica."
+        )
         return 1
 
     senal = lista[len(lista) // 2]
@@ -91,7 +121,7 @@ def main():
 
     # El bot descarta la ultima vela por estar abierta: hay que darle una mas.
     tramo = velas[: senal.indice + 2]
-    cliente = ClienteFalso(tramo)
+    cliente = ClienteFalso(tramo, filtros)
 
     bot.ARCHIVO_ESTADO = "/tmp/estado_prueba_integracion.json"
     bot.ARCHIVO_LOG = "/tmp/bot_prueba_integracion.log"
@@ -104,23 +134,29 @@ def main():
     estado = {}
 
     print("\n--- 1) Entrada ---")
-    bot.revisar(cliente, ajustes, "BTCUSDT", "1h", cfg, estado)
+    bot.revisar(cliente, ajustes, simbolo, intervalo, cfg, estado)
     for o in cliente.ordenes:
         print("   ", o)
 
     tipos = [o[0] for o in cliente.ordenes]
     assert "mercado" in tipos, "no mando la orden de entrada"
     assert "stop" in tipos, "no mando el stop"
-    assert "tp_parcial" in tipos, "no mando la parcial de 1R"
+    assert "tp_parcial" in tipos, f"no mando la parcial de 1R (parcial_1r={cfg.parcial_1r})"
     assert "tp_final" in tipos, "no mando el objetivo final"
     assert tipos.index("mercado") < tipos.index("stop"), "el stop debe ir despues de la entrada"
 
     cantidad = [o for o in cliente.ordenes if o[0] == "mercado"][0][3]
-    perdida = cantidad * abs(senal.entrada - senal.stop)
+    riesgo_unitario = abs(senal.entrada - senal.stop)
+    perdida = cantidad * riesgo_unitario
     esperado = SALDO * RIESGO_PCT / 100
-    print(f"\n   tamano {cantidad} -> si salta el stop pierde {perdida:.2f} USDT (objetivo {esperado:.2f})")
-    assert perdida <= esperado * 1.05, "la posicion arriesga mas de lo configurado"
-    assert perdida >= esperado * 0.80, "la posicion quedo demasiado chica"
+    nocional = cantidad * senal.entrada
+    print(f"\n   tamano {cantidad} ({nocional:.2f} USDT de nocional)")
+    print(f"   si salta el stop pierde {perdida:.2f} USDT (objetivo {esperado:.2f})")
+    assert perdida <= esperado * 1.02, "la posicion arriesga mas de lo configurado"
+    # El redondeo al paso de lote solo puede dejar la posicion mas chica, y como
+    # maximo un paso entero por debajo del tamano ideal.
+    assert perdida >= esperado - filtros["paso"] * riesgo_unitario - 1e-9, "la posicion quedo demasiado chica"
+    assert nocional >= filtros["min_notional"], "el nocional quedo abajo del minimo de Binance"
 
     lado_stop = [o for o in cliente.ordenes if o[0] == "stop"][0][2]
     assert lado_stop == ("SELL" if senal.es_compra else "BUY"), "el stop cierra para el lado equivocado"
@@ -134,8 +170,9 @@ def main():
 
     nuevos = [o for o in cliente.ordenes if o[0] == "stop"]
     assert nuevos, "no repuso el stop despues de la parcial"
-    assert abs(nuevos[0][3] - senal.entrada) < 1e-9, "el stop nuevo no quedo en la entrada"
-    assert not estado["posiciones"]["BTCUSDT"]["parcial_pendiente"]
+    esperado_stop = cliente.ajustar_precio(simbolo, senal.entrada)
+    assert abs(nuevos[0][3] - esperado_stop) <= filtros["tick"], "el stop nuevo no quedo en la entrada"
+    assert not estado["posiciones"][simbolo]["parcial_pendiente"]
 
     print("\n--- 3) Posicion cerrada: tiene que limpiar ordenes y estado ---")
     cliente.ordenes.clear()
@@ -143,11 +180,11 @@ def main():
     bot.gestionar_posiciones(cliente, ajustes, estado)
     for o in cliente.ordenes:
         print("   ", o)
-    assert "BTCUSDT" not in estado.get("posiciones", {}), "quedo basura en el estado"
+    assert simbolo not in estado.get("posiciones", {}), "quedo basura en el estado"
 
     print("\nTODO OK: el camino completo funciona y respeta el riesgo.")
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv))
