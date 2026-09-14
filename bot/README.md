@@ -330,6 +330,20 @@ cp config.linea_gris.env config.env
 python bot.py
 ```
 
+### La misma regla en oro y forex
+
+Está también en MQL5 para MetaTrader 5, en
+[`metatrader/`](../metatrader/README.md). Medida sobre 2.4 años de oro y 2.8 de
+los majors de forex confirma el diagnóstico de arriba: en ese período **todo
+subió**, y ahí gana el lado largo (+0.213R) mientras el corto pierde (−0.156R),
+justo al revés que en cripto. La versión simétrica, que toma los dos lados y es
+la única operable sin adivinar, da +0.011R en oro/forex y −0.088R en cripto: cero
+en los dos.
+
+Lo que sí cambia a favor en MetaTrader es el **costo**: la ida y vuelta en oro es
+~0.005% del precio contra ~0.10% en Binance futuros. Eso baja el piso del stop de
+1% a 0.30%, así que los stops cortos que buscabas recién son viables ahí.
+
 ## Instalación en Termux
 
 ```bash
