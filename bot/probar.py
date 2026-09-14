@@ -21,13 +21,18 @@ Criterios de la simulacion:
   - NO se modela slippage ni el spread. La realidad siempre es un poco peor.
 """
 
+import json
 import sys
+import time
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone
 
 import binance_api as api
 import bot
 import estrategia
 import indicadores as ind
+import scalper
 
 COMISION_IDA_VUELTA = 0.10  # % del nocional
 
@@ -45,8 +50,13 @@ def precio(valor):
     return f"{valor:>11.{ancho}f}"
 
 
-def resultado(velas, s, cfg):
-    """Devuelve (R obtenidas, etiqueta) recorriendo las velas siguientes."""
+def resultado(velas, s, cfg, limite_velas=0):
+    """Devuelve (R obtenidas, etiqueta) recorriendo las velas siguientes.
+
+    `limite_velas` es la salida por tiempo del scalper: si no toco ni el stop ni
+    el objetivo, se cierra a mercado al precio que haya. Hay que modelarla, si no
+    se estaria midiendo una estrategia distinta a la que opera el bot.
+    """
     riesgo = abs(s.entrada - s.stop)
     uno_r = s.objetivo_1r
     fraccion = cfg.fraccion_parcial if cfg.parcial_1r else 0.0
@@ -81,7 +91,45 @@ def resultado(velas, s, cfg):
                 return fraccion + (1 - fraccion) * cfg.rr, "gano completa"
             return (fraccion + (1 - fraccion) * cfg.rr) if fraccion else cfg.rr, "gano completa"
 
+        if limite_velas and (j - s.indice) >= limite_velas:
+            movido = (v.cierre - s.entrada) if s.es_compra else (s.entrada - v.cierre)
+            ganado = movido / riesgo
+            if parcial_hecha:
+                ganado = fraccion + (1 - fraccion) * ganado
+            return ganado, "salio por tiempo"
+
     return None, "sin cerrar"
+
+
+ESPEJO = "https://data-api.binance.vision"
+
+
+def klines_espejo(simbolo, temporalidad, limite):
+    """Velas del espejo publico de datos, bajadas por tramos.
+
+    Sirve para dos cosas: cuando Binance responde 451 por geobloqueo, y cuando
+    se piden mas de 1500 velas, que es el maximo por pedido.
+    """
+    minutos = bot.MINUTOS_TF.get(temporalidad, 60)
+    paso = 1000
+    fin = int(time.time() * 1000)
+    cursor = fin - limite * minutos * 60_000
+    filas = []
+    while cursor < fin and len(filas) < limite:
+        url = (f"{ESPEJO}/api/v3/klines?symbol={simbolo}&interval={temporalidad}"
+               f"&startTime={cursor}&limit={paso}")
+        pedido = urllib.request.Request(url, headers={"User-Agent": "probar/1.0"})
+        with urllib.request.urlopen(pedido, timeout=30) as r:
+            lote = json.loads(r.read())
+        if not lote:
+            break
+        filas.extend(lote)
+        siguiente = lote[-1][0] + minutos * 60_000
+        if siguiente <= cursor:
+            break
+        cursor = siguiente
+        time.sleep(0.05)
+    return filas[-limite:]
 
 
 def main():
@@ -103,14 +151,17 @@ def main():
     try:
         crudas = cliente.klines(simbolo, temporalidad, limite)
     except api.ErrorBinance as e:
-        print(f"No pude bajar el historial: {e}")
-        if "451" in str(e):
-            print(
-                "\nEl 451 es geobloqueo de Binance, no un problema del bot. Desde el\n"
-                "celular con tu conexion habitual deberia funcionar. Si no, probá\n"
-                "--testnet (datos con huecos, solo para ver la mecanica)."
-            )
-        return
+        if "451" not in str(e):
+            print(f"No pude bajar el historial: {e}")
+            return
+        # 451 es geobloqueo. El espejo publico de datos no lo tiene, y sirve
+        # igual: son las mismas velas del mercado spot.
+        print("Binance devolvio 451 (geobloqueo). Uso el espejo publico de datos.")
+        try:
+            crudas = klines_espejo(simbolo, temporalidad, limite)
+        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as e2:
+            print(f"El espejo tampoco respondio: {e2}")
+            return
     velas = ind.desde_klines(crudas)[:-1]
     if not velas:
         print("No vinieron velas.")
@@ -130,6 +181,17 @@ def main():
             f"del precio  |  pivote {cfg.pivote}  |  "
             f"bloques caducan a {cfg.edad_max_bloque or '∞'} velas"
         )
+    elif mod is scalper:
+        print(
+            f"tendencia EMA {cfg.ema_rapida}/{cfg.ema_lenta} en la temporalidad "
+            f"x{cfg.factor_mayor}  |  impulso {cfg.impulso_atr} ATR  |  "
+            f"FVG {'si' if cfg.exigir_fvg else 'no'}"
+        )
+        print(
+            f"salida por tiempo: {cfg.minutos_max or 'no'} min  |  "
+            f"riesgo permitido {cfg.piso_stop:.3f}-{cfg.riesgo_max_pct}% del precio "
+            f"(el piso lo impone el costo de {cfg.costo_ida_vuelta_pct}%)"
+        )
     else:
         print(
             f"EMA {cfg.ema_periodo}  |  riesgo permitido "
@@ -144,10 +206,15 @@ def main():
         print("Es normal en muestras cortas: los filtros son exigentes.")
         return
 
+    # La salida por tiempo del scalper, expresada en velas de esta temporalidad.
+    minutos_max = getattr(cfg, "minutos_max", 0)
+    minutos_vela = bot.MINUTOS_TF.get(temporalidad, 60)
+    limite_velas = max(1, minutos_max // minutos_vela) if minutos_max else 0
+
     erres = 0.0
     positivas = negativas = abiertas = 0
     for s in lista:
-        r, etiqueta = resultado(velas, s, cfg)
+        r, etiqueta = resultado(velas, s, cfg, limite_velas)
         momento = datetime.fromtimestamp(s.tiempo / 1000, timezone.utc)
         if r is None:
             abiertas += 1

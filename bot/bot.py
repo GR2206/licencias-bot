@@ -27,10 +27,12 @@ import binance_api as api
 import estrategia
 import indicadores as ind
 import linea_gris
+import scalper
 
-# Las dos estrategias disponibles. Comparten interfaz (Config, senal_actual) asi
-# que el bot no necesita saber cual esta corriendo.
-ESTRATEGIAS = {"order_blocks": estrategia, "linea_gris": linea_gris}
+# Las estrategias disponibles. Todas comparten interfaz (Config, senales,
+# senal_actual) asi que el bot no necesita saber cual esta corriendo.
+ESTRATEGIAS = {"order_blocks": estrategia, "linea_gris": linea_gris,
+               "scalper": scalper}
 
 RUTA = os.path.dirname(os.path.abspath(__file__))
 ARCHIVO_ESTADO = os.path.join(RUTA, "estado.json")
@@ -54,7 +56,16 @@ def cargar_env(ruta=None):
             if not linea or linea.startswith("#") or "=" not in linea:
                 continue
             clave, valor = linea.split("=", 1)
-            os.environ.setdefault(clave.strip(), valor.strip().strip('"').strip("'"))
+            valor = valor.strip()
+            # Comentario al final de la linea. Se corta solo si el # viene
+            # despues de un espacio, para no romper un valor que lo contenga.
+            # Sin esto, `EXIGIR_FVG=true  # nota` se leia como False en silencio,
+            # que es la peor clase de error de configuracion: no avisa.
+            if not valor.startswith(("'", '"')):
+                for corte in (" #", "\t#"):
+                    if corte in valor:
+                        valor = valor.split(corte, 1)[0].strip()
+            os.environ.setdefault(clave.strip(), valor.strip('"').strip("'"))
 
 
 class Ajustes:
@@ -126,8 +137,16 @@ def avisos_ventana(ajustes, cfg):
     """
     avisos = []
     # Margen para que ATR, SuperTrend y RSI lleguen estabilizados a la zona util.
+    # Cada estrategia tiene su media con otro nombre y el scalper la calcula
+    # sobre la temporalidad mayor, asi que hay que multiplicar por el factor.
     usa_ema = getattr(cfg, "usar_ema", True)
-    calentamiento = max(200, cfg.atr_periodo * 10, cfg.ema_periodo if usa_ema else 0)
+    largo_media = 0
+    if usa_ema:
+        largo_media = max(
+            getattr(cfg, "ema_periodo", 0),
+            getattr(cfg, "ema_lenta", 0) * getattr(cfg, "factor_mayor", 1),
+        )
+    calentamiento = max(200, getattr(cfg, "atr_periodo", 14) * 10, largo_media)
     # La caducidad de bloques solo existe en la estrategia de Order Blocks. En la
     # de la linea gris la ventana util es la EMA y ya esta cubierta arriba.
     edad = getattr(cfg, "edad_max_bloque", calentamiento)
@@ -147,6 +166,18 @@ def avisos_ventana(ajustes, cfg):
 
     if ajustes.velas > 1500:
         avisos.append(f"Binance entrega 1500 velas como maximo, VELAS={ajustes.velas} se recorta")
+
+    # Si el piso que impone el costo queda arriba del techo de riesgo, no hay
+    # ninguna operacion posible y el bot se quedaria callado para siempre.
+    piso = getattr(cfg, "piso_stop", 0.0)
+    if piso and piso >= cfg.riesgo_max_pct:
+        avisos.append(
+            f"El costo de operar exige un stop de al menos {piso:.3f}% del precio "
+            f"y RIESGO_MAX_PCT={cfg.riesgo_max_pct}: no hay ninguna operacion "
+            f"posible. Subí RIESGO_MAX_PCT, o bajá COSTO_IDA_VUELTA_PCT si tu "
+            f"comision real es menor, o aceptá que el costo se coma mas de "
+            f"{cfg.costo_max_r} R subiendo COSTO_MAX_R"
+        )
 
     # Peso de un barrido completo. El limite de Binance son 2400 por minuto.
     pedidos = len(ajustes.simbolos) * len(ajustes.temporalidades)
@@ -452,8 +483,10 @@ def main():
     registrar("=" * 62)
     if mod is estrategia:
         registrar("Bot de confluencia — Tendencia + Order Block")
-    else:
+    elif mod is linea_gris:
         registrar("Bot de la linea gris — martillo en la EMA y ruptura")
+    else:
+        registrar("Bot de scalping — impulso e imbalance con salida por tiempo")
     registrar(f"  Entorno       : {ajustes.entorno} ({ajustes.base})")
     registrar(f"  Modo          : {'REAL, manda ordenes' if ajustes.en_vivo else 'simulacion'}")
     registrar(f"  Simbolos      : {', '.join(ajustes.simbolos)}")
@@ -471,12 +504,19 @@ def main():
             f"FVG {'si' if cfg.exigir_fvg else 'no'} | alejarse {cfg.alejarse_atr} ATR | "
             f"confirmacion {cfg.confirmacion} | parcial {'si' if cfg.parcial_1r else 'no'}"
         )
-    else:
+    elif mod is linea_gris:
         registrar(
             f"                  EMA {cfg.ema_periodo} | "
             f"martillo {'si' if cfg.usar_martillo else 'no'} | "
             f"ruptura {'si' if cfg.usar_ruptura else 'no'} | "
             f"espejo al alza {'si' if cfg.ruptura_largo else 'no'}"
+        )
+    else:
+        registrar(
+            f"                  impulso {cfg.impulso_atr} ATR | "
+            f"FVG {'si' if cfg.exigir_fvg else 'no'} | "
+            f"salida por tiempo {cfg.minutos_max or 'no'} min | "
+            f"piso de stop {cfg.piso_stop:.3f}%"
         )
     for aviso in avisos_ventana(ajustes, cfg):
         registrar(f"  AVISO: {aviso}")
