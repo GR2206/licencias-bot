@@ -8,6 +8,7 @@ Uso:
     python explorar.py                          # los 25 mas operados, 30m, 180 dias
     python explorar.py --tf 15m --dias 365
     python explorar.py --simbolos BTCUSDT,ETHUSDT,SOLUSDT --tf 15m
+    python explorar.py --estrategia linea_gris --tf 15m --dias 365
 
 Lee config.env, asi que mide con la misma configuracion con la que va a operar
 el bot. Si cambias RIESGO_MAX_PCT o RR en el env, esto lo refleja.
@@ -110,11 +111,11 @@ def resultado(velas, s, cfg):
     return None, 0
 
 
-def operaciones(velas, cfg):
+def operaciones(velas, cfg, mod=None):
     """Una posicion por vez, como opera el bot de verdad."""
     ops = []
     libre_desde = -1
-    for s in estrategia.senales(velas, cfg):
+    for s in (mod or estrategia).senales(velas, cfg):
         if s.indice <= libre_desde:
             continue
         r, duracion = resultado(velas, s, cfg)
@@ -169,11 +170,12 @@ def main():
     simbolos = [s.strip().upper() for s in crudos.split(",")] if crudos else POR_DEFECTO
 
     bot.cargar_env()
-    cfg = bot.config_estrategia()
+    mod = bot.motor(argumento("--estrategia"))
+    cfg = bot.config_estrategia(mod)
 
     print("=" * 96)
     print(f"RECORRIDO POR {len(simbolos)} ACTIVOS — {tf}, {dias} dias de historia real de Binance")
-    print(f"RR 1:{cfg.rr} | stop {cfg.sl_modo} | riesgo permitido "
+    print(f"estrategia {mod.NOMBRE} | RR 1:{cfg.rr} | riesgo permitido "
           f"{cfg.riesgo_min_pct}-{cfg.riesgo_max_pct}% del precio | "
           f"parcial {'si' if cfg.parcial_1r else 'no'}")
     print(f"comisiones incluidas: {TAKER}% taker por lado, {MAKER}% maker en el objetivo")
@@ -194,7 +196,7 @@ def main():
             continue
         velas = velas[:-1]
         dias_reales = (velas[-1].tiempo - velas[0].tiempo) / 86_400_000
-        ops = operaciones(velas, cfg)
+        ops = operaciones(velas, cfg, mod)
         m = medir(ops, dias_reales)
         if not m:
             print(f"{s:<12} {'0':>5}  sin senales en este tramo")

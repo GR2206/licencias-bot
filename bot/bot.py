@@ -26,6 +26,11 @@ from datetime import datetime, timezone
 import binance_api as api
 import estrategia
 import indicadores as ind
+import linea_gris
+
+# Las dos estrategias disponibles. Comparten interfaz (Config, senal_actual) asi
+# que el bot no necesita saber cual esta corriendo.
+ESTRATEGIAS = {"order_blocks": estrategia, "linea_gris": linea_gris}
 
 RUTA = os.path.dirname(os.path.abspath(__file__))
 ARCHIVO_ESTADO = os.path.join(RUTA, "estado.json")
@@ -121,19 +126,23 @@ def avisos_ventana(ajustes, cfg):
     """
     avisos = []
     # Margen para que ATR, SuperTrend y RSI lleguen estabilizados a la zona util.
-    calentamiento = max(200, cfg.atr_periodo * 10, cfg.ema_periodo if cfg.usar_ema else 0)
+    usa_ema = getattr(cfg, "usar_ema", True)
+    calentamiento = max(200, cfg.atr_periodo * 10, cfg.ema_periodo if usa_ema else 0)
+    # La caducidad de bloques solo existe en la estrategia de Order Blocks. En la
+    # de la linea gris la ventana util es la EMA y ya esta cubierta arriba.
+    edad = getattr(cfg, "edad_max_bloque", calentamiento)
 
-    if cfg.edad_max_bloque <= 0:
+    if edad <= 0:
         if ajustes.velas < 1500:
             avisos.append(
                 f"EDAD_MAX_BLOQUE=0 (los bloques no caducan) con VELAS={ajustes.velas}. "
                 "Un bloque mas viejo que la ventana no se ve y el bot opera distinto al "
                 "backtest. Poné VELAS=1500 o EDAD_MAX_BLOQUE=250"
             )
-    elif ajustes.velas < cfg.edad_max_bloque + calentamiento:
+    elif ajustes.velas < edad + calentamiento:
         avisos.append(
-            f"VELAS={ajustes.velas} es corto para EDAD_MAX_BLOQUE={cfg.edad_max_bloque}: "
-            f"hacen falta al menos {cfg.edad_max_bloque + calentamiento}"
+            f"VELAS={ajustes.velas} es corto para lo que pide la estrategia: "
+            f"hacen falta al menos {edad + calentamiento}"
         )
 
     if ajustes.velas > 1500:
@@ -145,20 +154,29 @@ def avisos_ventana(ajustes, cfg):
     if peso > 1200:
         avisos.append(
             f"Un barrido de {pedidos} pedidos con VELAS={ajustes.velas} pesa {peso} "
-            f"y el limite de Binance son 2400 por minuto. Bajá VELAS a 500 "
-            f"(alcanza con EDAD_MAX_BLOQUE={cfg.edad_max_bloque}) o usá menos simbolos"
+            f"y el limite de Binance son 2400 por minuto. Bajá VELAS a "
+            f"{edad + calentamiento} o usá menos simbolos"
         )
     return avisos
 
 
-def config_estrategia():
+def motor(nombre=None):
+    """Devuelve el modulo de estrategia elegido con ESTRATEGIA."""
+    nombre = (nombre or os.getenv("ESTRATEGIA") or "order_blocks").strip().lower()
+    if nombre not in ESTRATEGIAS:
+        opciones = ", ".join(ESTRATEGIAS)
+        raise SystemExit(f"ESTRATEGIA={nombre!r} no existe. Opciones: {opciones}")
+    return ESTRATEGIAS[nombre]
+
+
+def config_estrategia(mod=None):
     """Arma la Config de la estrategia desde las variables de entorno.
 
-    Cada campo de estrategia.Config se puede sobreescribir con una variable en
+    Cada campo de la Config se puede sobreescribir con una variable en
     MAYUSCULAS con el mismo nombre. Por ejemplo RIESGO_MAX_PCT=5 o PIVOTE=3.
     Asi se puede afinar un activo sin tocar el codigo.
     """
-    cfg = estrategia.Config()
+    cfg = (mod or motor()).Config()
     for campo in dataclasses.fields(cfg):
         crudo = os.getenv(campo.name.upper())
         if crudo is None or crudo.strip() == "":
@@ -358,13 +376,15 @@ def gestionar_posiciones(cliente, ajustes, estado):
                 registrar("  ERROR moviendo el stop, revisá a mano:", e)
 
 
-def revisar(cliente, ajustes, simbolo, temporalidad, cfg, estado, posiciones=None):
+def revisar(cliente, ajustes, simbolo, temporalidad, cfg, estado, posiciones=None,
+            mod=None):
     """Revisa un simbolo en una temporalidad y opera si hay senal.
 
     `posiciones` es el mapa de posiciones abiertas ya leido afuera. Con muchos
     simbolos importa: preguntar una por una son 25 pedidos firmados por señal,
     y en un solo pedido vienen todas.
     """
+    mod = mod or motor()
     clave = f"{simbolo}:{temporalidad}"
     try:
         crudas = cliente.klines(simbolo, temporalidad, ajustes.velas)
@@ -377,7 +397,7 @@ def revisar(cliente, ajustes, simbolo, temporalidad, cfg, estado, posiciones=Non
         return
     velas = velas[:-1]  # la ultima esta abierta, no sirve
 
-    senal = estrategia.senal_actual(velas, cfg)
+    senal = mod.senal_actual(velas, cfg)
     if senal is None:
         return
 
@@ -426,10 +446,14 @@ def revisar(cliente, ajustes, simbolo, temporalidad, cfg, estado, posiciones=Non
 def main():
     cargar_env()
     ajustes = Ajustes()
-    cfg = config_estrategia()
+    mod = motor()
+    cfg = config_estrategia(mod)
 
     registrar("=" * 62)
-    registrar("Bot de confluencia — Tendencia + Order Block")
+    if mod is estrategia:
+        registrar("Bot de confluencia — Tendencia + Order Block")
+    else:
+        registrar("Bot de la linea gris — martillo en la EMA y ruptura")
     registrar(f"  Entorno       : {ajustes.entorno} ({ajustes.base})")
     registrar(f"  Modo          : {'REAL, manda ordenes' if ajustes.en_vivo else 'simulacion'}")
     registrar(f"  Simbolos      : {', '.join(ajustes.simbolos)}")
@@ -437,14 +461,23 @@ def main():
     registrar(f"  Riesgo        : {ajustes.riesgo_pct}% de la cuenta por operacion")
     registrar(f"  Apalancamiento: x{ajustes.apalancamiento}")
     registrar(
-        f"  Estrategia    : RR 1:{cfg.rr} | stop {cfg.sl_modo} | "
-        f"riesgo permitido {cfg.riesgo_min_pct}-{cfg.riesgo_max_pct}% del precio"
+        f"  Estrategia    : {mod.NOMBRE if hasattr(mod, 'NOMBRE') else 'order_blocks'} | "
+        f"RR 1:{cfg.rr} | riesgo permitido "
+        f"{cfg.riesgo_min_pct}-{cfg.riesgo_max_pct}% del precio"
     )
-    registrar(
-        f"                  pivote {cfg.pivote} | FVG {'si' if cfg.exigir_fvg else 'no'} | "
-        f"alejarse {cfg.alejarse_atr} ATR | confirmacion {cfg.confirmacion} | "
-        f"parcial {'si' if cfg.parcial_1r else 'no'}"
-    )
+    if mod is estrategia:
+        registrar(
+            f"                  stop {cfg.sl_modo} | pivote {cfg.pivote} | "
+            f"FVG {'si' if cfg.exigir_fvg else 'no'} | alejarse {cfg.alejarse_atr} ATR | "
+            f"confirmacion {cfg.confirmacion} | parcial {'si' if cfg.parcial_1r else 'no'}"
+        )
+    else:
+        registrar(
+            f"                  EMA {cfg.ema_periodo} | "
+            f"martillo {'si' if cfg.usar_martillo else 'no'} | "
+            f"ruptura {'si' if cfg.usar_ruptura else 'no'} | "
+            f"espejo al alza {'si' if cfg.ruptura_largo else 'no'}"
+        )
     for aviso in avisos_ventana(ajustes, cfg):
         registrar(f"  AVISO: {aviso}")
     registrar("=" * 62)
@@ -495,7 +528,8 @@ def main():
                           f"reviso {len(ajustes.simbolos)} simbolos")
                 for simbolo in ajustes.simbolos:
                     try:
-                        revisar(cliente, ajustes, simbolo, temporalidad, cfg, estado, posiciones)
+                        revisar(cliente, ajustes, simbolo, temporalidad, cfg, estado,
+                                posiciones, mod)
                     except Exception as e:  # el bot no se muere por un error puntual
                         registrar(f"Error inesperado en {simbolo}:{temporalidad}:", repr(e))
                     time.sleep(ajustes.pausa_pedidos)

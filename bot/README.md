@@ -38,6 +38,11 @@ combinaciones (3%) dan positivo** en los activos que no se usaron para elegir.
 **No hay ventaja demostrable**, y no es cuestión de encontrar los parámetros
 justos.
 
+La segunda estrategia, la de la **línea gris** (martillo en la EMA 200 y ruptura),
+está medida con el mismo método en su propia sección más abajo. Ahí sí aparece un
+número positivo fuera de muestra, pero depende de que el mercado siga cayendo:
+está explicado con las tres pruebas que lo muestran.
+
 Por eso el bot arranca en `MODO=simulacion` y por eso insisto abajo con el
 testnet. No es burocracia: es que la evidencia dice que esto no gana plata, y las
 comisiones (0.10% ida y vuelta) se llevan otra parte de cada operación.
@@ -241,6 +246,90 @@ python explorar.py --tf 15m --dias 180
 python explorar.py --simbolos BTCUSDT,ETHUSDT,SOLUSDT --tf 30m --dias 365
 ```
 
+## La línea gris: la regla del martillo y la ruptura
+
+La línea gris del gráfico es la **EMA 200** (la naranja es la EMA 50). La idea de
+usarla como nivel es buena y se puede escribir como dos reglas exactas:
+
+- **LONG**: el precio viene por arriba, toca o perfora la línea y deja una **vela
+  martillo** que vuelve a cerrar arriba. Rechazó el nivel.
+- **SHORT**: el cierre **pasa de largo** al otro lado de la línea. Dejó de
+  sostener.
+
+Está implementada en dos lugares que calculan lo mismo:
+[`tradingview/linea_gris.pine`](../tradingview/linea_gris.pine) para ver los
+carteles en el gráfico, y `linea_gris.py` para que la corra el bot con
+`ESTRATEGIA=linea_gris`.
+
+### El hallazgo que sí tiene sustento: el piso del stop
+
+El martillo pone el stop debajo de su mecha, así que sale corto solo. Eso parecía
+la solución al problema de los stops largos, pero medido resultó lo contrario:
+**los stops muy cortos pierden por aritmética**. La comisión es un porcentaje del
+nocional, no de tu riesgo. Sobre un stop del 0.2% la ida y vuelta se lleva 0.35R;
+sobre uno del 1.5%, apenas 0.05R.
+
+Descartar las señales con el stop demasiado pegado (`RIESGO_MIN_PCT`) es el
+ajuste que más movió el resultado en todo el proyecto:
+
+| Stop mínimo | R/op en los 8 activos de elección | R/op en los 17 de control |
+| --- | --- | --- |
+| 0.15% | −0.035 | −0.072 |
+| 0.40% | +0.039 | −0.022 |
+| 0.70% | +0.119 | +0.029 |
+| **1.00%** | **+0.168** | **+0.074** |
+| 1.50% | +0.172 | +0.092 |
+
+Es monótono en las dos columnas a la vez y tiene una explicación mecánica, que es
+lo que distingue un hallazgo de una casualidad. Vale también para la estrategia
+de Order Blocks, aunque ahí sólo la lleva de −0.10R a cero.
+
+### Qué dio cada mitad de tu idea
+
+Barrí **1296 combinaciones** (EMA, RR, exigencia del martillo, tolerancia,
+pendiente, color) sobre 25 activos en M15+M30+H1 con un año de historia real,
+eligiendo en 8 activos y verificando en los otros 17:
+
+| Regla | Operaciones | R/op en los activos de control |
+| --- | --- | --- |
+| SHORT cuando pasa de largo | 3586 | **+0.084** |
+| LONG con martillo en la línea | 194 | −0.114 |
+
+O sea: **la parte del short funciona y la del martillo no.** Con el piso de stop
+en 1%, la canasta de 8 activos en M15+H1 da 3.0 operaciones por día, +0.29R por
+operación y 27% de acierto, con una peor racha de 21 pérdidas seguidas. Ese
++0.29R está inflado porque esos 8 activos se eligieron mirando este mismo año; el
+número limpio es el +0.084R de los 17 de control.
+
+### Por qué igual arranca en simulación
+
+Tres mediciones que hay que mirar antes de creerle al short:
+
+1. **Fue un año bajista.** 23 de los 25 activos cayeron, mediana −56%. Apliqué la
+   *misma* regla de ruptura hacia arriba: **−0.182R**. Y en ZEC, el único que
+   subió fuerte (+1951%), se da vuelta: el largo gana +0.139R y el corto casi no
+   rinde. Probé también filtrar por régimen (operar sólo a favor de una EMA mucho
+   más lenta) y los largos siguieron en −0.22R, así que no es "ir a favor de la
+   tendencia": es que en este año pagaron las bajadas.
+2. **Toda la ventaja cabe dentro de los costos.** +0.074R como está medido,
+   +0.047R con 0.02% de slippage por lado, +0.006R con 0.05%, y **negativo** si
+   pagás taker en todo. Depende de que el objetivo entre como maker y de que el
+   deslizamiento sea mínimo.
+3. **Se apaga.** Dentro de los propios activos de control: +0.149R en la primera
+   mitad del año y −0.008R en la segunda.
+
+Un resultado que sólo existe en una dirección, sólo con costos favorables y sólo
+en la primera mitad de la muestra es un resultado del mercado, no de la regla.
+
+```bash
+# Ver la canasta con tus parámetros
+python explorar.py --estrategia linea_gris --tf 15m --dias 365
+
+# Correrla en simulación
+cp config.linea_gris.env config.env
+python bot.py
+```
+
 ## Instalación en Termux
 
 ```bash
@@ -365,7 +454,8 @@ el stop llegue a actuar.
 | Archivo | Qué hace |
 | --- | --- |
 | `bot.py` | loop principal: mira, decide, ejecuta y gestiona la parcial |
-| `estrategia.py` | la lógica de confluencia, espejo del script de Pine |
+| `estrategia.py` | la lógica de confluencia (Order Blocks), espejo del script de Pine |
+| `linea_gris.py` | la regla del martillo en la EMA 200 y la ruptura |
 | `indicadores.py` | ATR, EMA, RSI, SuperTrend, pivotes y niveles diarios |
 | `binance_api.py` | cliente REST firmado (real o testnet) |
 | `probar.py` | simulación de un activo sobre historia real, con comisiones |
@@ -374,6 +464,12 @@ el stop llegue a actuar.
 | `config.example.env` | plantilla de configuración, con todo explicado |
 | `config.chzusdt.env` | plantilla ya ajustada para CHZUSDT en H1 y M30 |
 | `config.multi.env` | canasta de 8 activos en M15, ~4 operaciones por día |
+| `config.linea_gris.env` | la regla de la línea gris, 8 activos en M15+H1, 3 por día |
+
+Se elige la estrategia con `ESTRATEGIA=order_blocks` (por defecto) o
+`ESTRATEGIA=linea_gris`. Las dos comparten el mismo motor de ejecución, gestión
+de riesgo y estado, así que todo lo que dice este README sobre órdenes, tamaño de
+posición y límites de Binance vale para las dos.
 
 Todos los parámetros de la estrategia se pueden cambiar desde el `.env` en
 MAYÚSCULAS (`RR`, `PIVOTE`, `RIESGO_MAX_PCT`, `EXIGIR_FVG`, `PARCIAL_1R`…). No

@@ -101,7 +101,8 @@ def main(argv):
 
     # Si hay un config.env con parametros de estrategia, se usa ese.
     bot.cargar_env()
-    cfg = bot.config_estrategia()
+    mod = bot.motor()
+    cfg = bot.config_estrategia(mod)
 
     publico, donde = cliente_publico()
     filtros = publico.filtros(simbolo)
@@ -109,8 +110,9 @@ def main(argv):
     print(f"  filtros reales: {filtros}")
 
     velas = ind.desde_klines(publico.klines(simbolo, intervalo, 1500))[:-1]
-    lista = estrategia.senales(velas, cfg)
-    print(f"  {len(velas)} velas, {len(lista)} senales encontradas")
+    lista = mod.senales(velas, cfg)
+    print(f"  {len(velas)} velas, {len(lista)} senales encontradas "
+          f"(estrategia {mod.NOMBRE})")
     if not lista:
         print(
             "No aparecieron senales en este tramo, asi que no hay nada que probar.\n"
@@ -137,14 +139,15 @@ def main(argv):
     estado = {}
 
     print("\n--- 1) Entrada ---")
-    bot.revisar(cliente, ajustes, simbolo, intervalo, cfg, estado)
+    bot.revisar(cliente, ajustes, simbolo, intervalo, cfg, estado, mod=mod)
     for o in cliente.ordenes:
         print("   ", o)
 
     tipos = [o[0] for o in cliente.ordenes]
     assert "mercado" in tipos, "no mando la orden de entrada"
     assert "stop" in tipos, "no mando el stop"
-    assert "tp_parcial" in tipos, f"no mando la parcial de 1R (parcial_1r={cfg.parcial_1r})"
+    if cfg.parcial_1r:
+        assert "tp_parcial" in tipos, "no mando la parcial de 1R"
     assert "tp_final" in tipos, "no mando el objetivo final"
     assert tipos.index("mercado") < tipos.index("stop"), "el stop debe ir despues de la entrada"
 
@@ -164,18 +167,28 @@ def main(argv):
     lado_stop = [o for o in cliente.ordenes if o[0] == "stop"][0][2]
     assert lado_stop == ("SELL" if senal.es_compra else "BUY"), "el stop cierra para el lado equivocado"
 
-    print("\n--- 2) Se cobra la parcial: el stop tiene que ir a la entrada ---")
-    cliente.ordenes.clear()
-    cliente.posicion_actual = (cantidad / 2) * (1 if senal.es_compra else -1)
-    bot.gestionar_posiciones(cliente, ajustes, estado)
-    for o in cliente.ordenes:
-        print("   ", o)
+    if cfg.parcial_1r:
+        print("\n--- 2) Se cobra la parcial: el stop tiene que ir a la entrada ---")
+        cliente.ordenes.clear()
+        cliente.posicion_actual = (cantidad / 2) * (1 if senal.es_compra else -1)
+        bot.gestionar_posiciones(cliente, ajustes, estado)
+        for o in cliente.ordenes:
+            print("   ", o)
 
-    nuevos = [o for o in cliente.ordenes if o[0] == "stop"]
-    assert nuevos, "no repuso el stop despues de la parcial"
-    esperado_stop = cliente.ajustar_precio(simbolo, senal.entrada)
-    assert abs(nuevos[0][3] - esperado_stop) <= filtros["tick"], "el stop nuevo no quedo en la entrada"
-    assert not estado["posiciones"][simbolo]["parcial_pendiente"]
+        nuevos = [o for o in cliente.ordenes if o[0] == "stop"]
+        assert nuevos, "no repuso el stop despues de la parcial"
+        esperado_stop = cliente.ajustar_precio(simbolo, senal.entrada)
+        assert abs(nuevos[0][3] - esperado_stop) <= filtros["tick"], \
+            "el stop nuevo no quedo en la entrada"
+        assert not estado["posiciones"][simbolo]["parcial_pendiente"]
+    else:
+        print("\n--- 2) Sin parcial configurada: no tiene que tocar el stop ---")
+        cliente.ordenes.clear()
+        # Posicion entera todavia abierta: no hay nada que gestionar.
+        cliente.posicion_actual = cantidad * (1 if senal.es_compra else -1)
+        bot.gestionar_posiciones(cliente, ajustes, estado)
+        assert not cliente.ordenes, f"movio ordenes sin motivo: {cliente.ordenes}"
+        print("    no mando ninguna orden, correcto")
 
     print("\n--- 3) Posicion cerrada: tiene que limpiar ordenes y estado ---")
     cliente.ordenes.clear()

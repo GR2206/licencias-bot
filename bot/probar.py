@@ -94,7 +94,8 @@ def main():
     # Se usa el mismo config.env que el bot: si no, se estaria probando una
     # estrategia distinta a la que va a operar.
     bot.cargar_env()
-    cfg = bot.config_estrategia()
+    mod = bot.motor()
+    cfg = bot.config_estrategia(mod)
     if "--sin-parcial" in sys.argv:
         cfg.parcial_1r = False
 
@@ -117,16 +118,25 @@ def main():
 
     desde = datetime.fromtimestamp(velas[0].tiempo / 1000, timezone.utc)
     hasta = datetime.fromtimestamp(velas[-1].tiempo / 1000, timezone.utc)
-    lista = estrategia.senales(velas, cfg)
+    lista = mod.senales(velas, cfg)
 
     print("=" * 78)
-    print(f"{simbolo} {temporalidad} — {len(velas)} velas")
+    print(f"{simbolo} {temporalidad} — {len(velas)} velas   estrategia: {mod.NOMBRE}")
     print(f"desde {desde:%Y-%m-%d %H:%M} hasta {hasta:%Y-%m-%d %H:%M} (UTC)")
     print(f"RR 1:{cfg.rr}  |  parcial en 1R: {'si' if cfg.parcial_1r else 'no'}")
-    print(
-        f"stop {cfg.sl_modo}  |  riesgo permitido {cfg.riesgo_min_pct}-{cfg.riesgo_max_pct}% "
-        f"del precio  |  pivote {cfg.pivote}  |  bloques caducan a {cfg.edad_max_bloque or '∞'} velas"
-    )
+    if mod is estrategia:
+        print(
+            f"stop {cfg.sl_modo}  |  riesgo permitido {cfg.riesgo_min_pct}-{cfg.riesgo_max_pct}% "
+            f"del precio  |  pivote {cfg.pivote}  |  "
+            f"bloques caducan a {cfg.edad_max_bloque or '∞'} velas"
+        )
+    else:
+        print(
+            f"EMA {cfg.ema_periodo}  |  riesgo permitido "
+            f"{cfg.riesgo_min_pct}-{cfg.riesgo_max_pct}% del precio  |  "
+            f"martillo {'si' if cfg.usar_martillo else 'no'}  |  "
+            f"ruptura {'si' if cfg.usar_ruptura else 'no'}"
+        )
     print("=" * 78)
 
     if not lista:

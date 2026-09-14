@@ -1,0 +1,193 @@
+// =============================================================================
+//  LINEA GRIS — REBOTE CON MARTILLO Y RUPTURA
+// =============================================================================
+//  La linea gris de "AI Trend Signals" es la EMA lenta (200 por defecto). Este
+//  indicador la aisla y marca las dos cosas que se le pueden pedir:
+//
+//    LONG  : el precio viene por arriba de la linea, la toca o la perfora y deja
+//            una VELA MARTILLO que vuelve a cerrar arriba. Se rechaza el nivel.
+//    SHORT : el precio "pasa de largo" y cierra claramente del otro lado. La
+//            linea deja de sostener.
+//
+//  El stop sale de la mecha del martillo (o del maximo de la vela que rompe),
+//  asi que es corto por naturaleza. Eso es bueno y malo a la vez: bueno porque
+//  arriesgas poco, malo porque la comision, que es un porcentaje fijo del
+//  nocional, pesa muchisimo cuando el stop es diminuto. Con un stop del 0.2% la
+//  comision de ida y vuelta se come casi media R. Por eso hay un piso de stop.
+//
+// -----------------------------------------------------------------------------
+//  QUE DIO AL MEDIRLO (25 activos de Binance, 1 anio real, M15+M30+H1,
+//  comisiones incluidas, eligiendo parametros en 8 activos y verificando en los
+//  otros 17 que no se usaron para elegir):
+//
+//    * SHORT por ruptura ...... +0.08 R por operacion en los activos de control
+//    * LONG por martillo ...... -0.11 R por operacion
+//
+//  Antes de entusiasmarse con el corto, tres advertencias que salieron de la
+//  misma medicion:
+//
+//    1. En ese anio 23 de los 25 activos BAJARON, con una mediana de -56%. La
+//       misma regla de ruptura aplicada al alza da -0.18 R. En ZEC, el unico que
+//       subio fuerte, se invierte: el largo gana y el corto casi no. O sea que
+//       el numero positivo del corto puede ser el mercado, no la regla.
+//    2. Se muere con los costos: +0.07 R con comision de maker en el objetivo,
+//       +0.01 R si le sumas 0.05% de slippage por lado, negativo si pagas taker
+//       en todo. La ventaja entera cabe dentro de los costos.
+//    3. Se apaga con el tiempo: +0.15 R en la primera mitad del anio, -0.01 R
+//       en la segunda.
+//
+//  Conclusion honesta: sirve para ver el nivel y para entender el contexto. No
+//  hay evidencia de que sea rentable sola. Si la vas a operar, hacelo primero
+//  en simulacion.
+// =============================================================================
+
+//@version=5
+indicator("Linea Gris — Martillo y Ruptura", shorttitle="Linea Gris", overlay=true, max_labels_count=500, max_lines_count=500, max_bars_back=500)
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  INPUTS
+// ─────────────────────────────────────────────────────────────────────────────
+gLinea = "① La linea"
+emaLen   = input.int(200, "EMA — periodo", minval=5, group=gLinea, tooltip="200 es la linea gris del indicador padre. En M30 son unos 4 dias de media.")
+atrLen   = input.int(14, "ATR — periodo", minval=1, group=gLinea)
+usarPend = input.bool(true, "Exigir que la linea vaya a favor", group=gLinea, tooltip="Para el rebote largo, la EMA tiene que estar subiendo. Un rebote contra una linea que baja suele fallar.")
+pendVel  = input.int(20, "Velas para medir la pendiente", minval=2, group=gLinea)
+
+gMartillo = "② El martillo"
+verMartillo = input.bool(true, "Buscar rebote con martillo (LONG)", group=gMartillo)
+tolAtr    = input.float(0.05, "Cerca de la linea = ATR ×", minval=0.0, step=0.05, group=gMartillo, tooltip="Que tan cerca tiene que pasar la mecha de la linea para contarlo como toque.")
+mechaFrac = input.float(0.60, "Mecha ≥ del rango total", minval=0.1, maxval=0.95, step=0.05, group=gMartillo, tooltip="0.60 = la mecha inferior es al menos el 60% de la vela. Cuanto mas alto, mas exigente.")
+mechaMin  = input.float(3.0, "Mecha ≥ cuerpo ×", minval=1.0, step=0.5, group=gMartillo)
+contraMax = input.float(0.20, "Mecha opuesta ≤ del rango", minval=0.0, maxval=0.9, step=0.05, group=gMartillo)
+exigirCol = input.bool(true, "El martillo tiene que cerrar verde", group=gMartillo)
+
+gRuptura = "③ La ruptura"
+verRuptura = input.bool(true, "Marcar ruptura de la linea (SHORT)", group=gRuptura)
+rupAtr     = input.float(0.20, "Pasarse de la linea por ATR ×", minval=0.0, step=0.05, group=gRuptura, tooltip="El cierre tiene que quedar de este lado por al menos esta distancia, para no contar roces.")
+rupLargo   = input.bool(false, "Tambien marcar ruptura al alza (LONG)", group=gRuptura, tooltip="Es el espejo exacto del short. Al medirlo dio -0.18 R por operacion contra +0.08 R del corto, en un anio en que casi todo bajo. Encendelo para ver el sesgo del activo, no como senal.")
+
+gRiesgo = "④ Gestion"
+rr        = input.float(4.0, "Objetivo (R)", minval=0.5, step=0.5, group=gRiesgo)
+colchon   = input.float(0.15, "Colchon del stop (ATR ×)", minval=0.0, step=0.05, group=gRiesgo)
+pisoStop  = input.float(1.0, "Stop minimo (% del precio)", minval=0.0, step=0.1, group=gRiesgo, tooltip="Descarta las senales con stop demasiado pegado, donde la comision se come la ganancia. Es el ajuste que mas movio el resultado en las pruebas: de -0.07 R a +0.07 R.")
+techoStop = input.float(3.0, "Stop maximo (% del precio)", minval=0.1, step=0.1, group=gRiesgo)
+esperaVel = input.int(3, "Velas de espera entre senales", minval=0, group=gRiesgo)
+verNiv    = input.bool(true, "Dibujar Entrada / SL / TP", group=gRiesgo)
+largoNiv  = input.int(30, "Largo de las lineas (velas)", minval=5, maxval=200, group=gRiesgo)
+
+gEstilo = "⑤ Estilo"
+verCartel = input.bool(true, "Carteles LONG / SHORT", group=gEstilo)
+verPrecio = input.bool(true, "Precio en el cartel", group=gEstilo)
+verLinea  = input.bool(true, "Dibujar la linea gris", group=gEstilo)
+bullCol   = input.color(#00e5a0, "Color alcista", group=gEstilo)
+bearCol   = input.color(#ff3c5f, "Color bajista", group=gEstilo)
+grisCol   = input.color(#9598a1, "Color de la linea", group=gEstilo)
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  CALCULOS
+// ─────────────────────────────────────────────────────────────────────────────
+linea = ta.ema(close, emaLen)
+atrV  = ta.atr(atrLen)
+tol   = atrV * tolAtr
+
+subiendo = linea > linea[pendVel]
+bajando  = linea < linea[pendVel]
+
+rango      = high - low
+cuerpo     = math.abs(close - open)
+techoCuerpo = math.max(open, close)
+pisoCuerpo  = math.min(open, close)
+mechaAbajo = pisoCuerpo - low
+mechaArriba = high - techoCuerpo
+
+// Martillo: mecha larga de un lado, cuerpo chico, casi nada del otro lado.
+esMartillo = rango > 0 and mechaAbajo >= rango * mechaFrac and mechaArriba <= rango * contraMax and (cuerpo == 0 or mechaAbajo >= cuerpo * mechaMin) and (not exigirCol or close >= open)
+esEstrella = rango > 0 and mechaArriba >= rango * mechaFrac and mechaAbajo <= rango * contraMax and (cuerpo == 0 or mechaArriba >= cuerpo * mechaMin)
+
+// Condiciones crudas, antes del filtro de riesgo.
+tocoAbajo  = low <= linea + tol
+rebote     = verMartillo and esMartillo and tocoAbajo and close > linea and (not usarPend or subiendo)
+rompeAbajo = verRuptura and close[1] > linea[1] and close < linea - atrV * rupAtr
+rompeArriba = rupLargo and close[1] < linea[1] and close > linea + atrV * rupAtr
+
+// Precios de cada plan.
+entradaCruda = close
+stopLargo  = low - atrV * colchon
+stopCorto  = high + atrV * colchon
+
+riesgoLargo = entradaCruda - stopLargo
+riesgoCorto = stopCorto - entradaCruda
+pctLargo = riesgoLargo / entradaCruda * 100
+pctCorto = riesgoCorto / entradaCruda * 100
+
+riesgoOkLargo = riesgoLargo > 0 and pctLargo >= pisoStop and pctLargo <= techoStop
+riesgoOkCorto = riesgoCorto > 0 and pctCorto >= pisoStop and pctCorto <= techoStop
+
+// Una senal por vez y con espera entre senales, como hace el bot.
+var int ultimaSenal = -10000
+esperaOk = bar_index - ultimaSenal > esperaVel
+
+compraMartillo = rebote and riesgoOkLargo and esperaOk
+compraRuptura  = not compraMartillo and rompeArriba and riesgoOkLargo and esperaOk
+compra         = compraMartillo or compraRuptura
+venta          = not compra and rompeAbajo and riesgoOkCorto and esperaOk
+
+if compra or venta
+    ultimaSenal := bar_index
+
+entrada  = close
+stop     = compra ? stopLargo : stopCorto
+riesgo   = compra ? riesgoLargo : riesgoCorto
+objetivo = compra ? entrada + riesgo * rr : entrada - riesgo * rr
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  DIBUJO
+// ─────────────────────────────────────────────────────────────────────────────
+plot(verLinea ? linea : na, "Linea gris", color=color.new(grisCol, 20), linewidth=2)
+
+// Se pinta la linea del color del lado en que esta el precio, para leer de un
+// vistazo si esta sosteniendo o si ya la perdio.
+plot(verLinea ? linea : na, "Linea (lado)", color=close > linea ? color.new(bullCol, 55) : color.new(bearCol, 55), linewidth=4)
+
+plotshape(compra and not verCartel, "Punto LONG", shape.triangleup, location.belowbar, bullCol, size=size.tiny)
+plotshape(venta and not verCartel, "Punto SHORT", shape.triangledown, location.abovebar, bearCol, size=size.tiny)
+
+if verCartel and compra
+    texto = (compraMartillo ? "LONG" : "LONG rup.") + (verPrecio ? "\n" + str.tostring(entrada, format.mintick) : "")
+    label.new(bar_index, low, texto, style=label.style_label_up, color=bullCol, textcolor=color.white, size=size.small, yloc=yloc.belowbar)
+
+if verCartel and venta
+    texto = "SHORT" + (verPrecio ? "\n" + str.tostring(entrada, format.mintick) : "")
+    label.new(bar_index, high, texto, style=label.style_label_down, color=bearCol, textcolor=color.white, size=size.small, yloc=yloc.abovebar)
+
+// Marca discreta cuando la vela es martillo pero la senal se descarto por el
+// piso de stop: sirve para entender por que el indicador no marco nada.
+plotshape(rebote and not riesgoOkLargo, "Martillo descartado", shape.xcross, location.belowbar, color.new(grisCol, 40), size=size.tiny)
+
+if verNiv and (compra or venta)
+    color col = compra ? bullCol : bearCol
+    line.new(bar_index, entrada, bar_index + largoNiv, entrada, color=color.new(col, 20), style=line.style_solid, width=1)
+    line.new(bar_index, stop, bar_index + largoNiv, stop, color=color.new(bearCol, 20), style=line.style_dashed, width=1)
+    line.new(bar_index, objetivo, bar_index + largoNiv, objetivo, color=color.new(bullCol, 20), style=line.style_dashed, width=1)
+    label.new(bar_index + largoNiv, stop, "SL " + str.tostring(stop, format.mintick), style=label.style_label_left, color=color.new(bearCol, 25), textcolor=color.white, size=size.tiny)
+    label.new(bar_index + largoNiv, objetivo, "TP " + str.tostring(objetivo, format.mintick), style=label.style_label_left, color=color.new(bullCol, 25), textcolor=color.white, size=size.tiny)
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  ALERTAS — mismo formato JSON que el resto del proyecto
+// ─────────────────────────────────────────────────────────────────────────────
+plan(accion) =>
+    '{"estrategia":"linea_gris","accion":"' + accion +
+      '","simbolo":"' + syminfo.ticker +
+      '","tf":"' + timeframe.period +
+      '","entrada":' + str.tostring(entrada, format.mintick) +
+      ',"sl":' + str.tostring(stop, format.mintick) +
+      ',"tp":' + str.tostring(objetivo, format.mintick) +
+      ',"riesgo_pct":' + str.tostring(compra ? pctLargo : pctCorto, "#.###") + '}'
+
+alertcondition(compra, "Linea gris — LONG", "LONG en la linea gris")
+alertcondition(venta, "Linea gris — SHORT", "SHORT: rompio la linea gris")
+
+if compra
+    alert(plan("BUY"), alert.freq_once_per_bar_close)
+if venta
+    alert(plan("SELL"), alert.freq_once_per_bar_close)

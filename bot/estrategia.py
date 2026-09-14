@@ -18,6 +18,8 @@ from dataclasses import dataclass, field
 
 import indicadores as ind
 
+NOMBRE = "order_blocks"
+
 
 @dataclass
 class Config:
