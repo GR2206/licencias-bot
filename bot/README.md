@@ -415,23 +415,24 @@ del precio. Eso resuelve el problema del costo y crea otro, porque un stop de
 0.667% con objetivo de 1.33% no se resuelve en 5 minutos. Medido en 60-90 días
 de M5:
 
-| activo | ops | op/día | acierto | vs azar | margen de error | R/op | llegaron al objetivo |
-|---|---|---|---|---|---|---|---|
-| BTCUSDT | 8 | 0.09 | 25.0% | −2.4 pp | ±16.6 | −0.515 | 0 de 8 |
-| ETHUSDT | 11 | 0.12 | 45.5% | +15.1 pp | ±14.2 | −0.109 | 0 de 11 |
-| SOLUSDT | 19 | 0.21 | 42.1% | +7.8 pp | ±10.8 | −0.047 | 1 de 19 |
-| DOGEUSDT | 20 | 0.22 | 45.0% | +11.9 pp | ±10.5 | −0.208 | 1 de 20 |
-| XRPUSDT | 14 | 0.16 | 28.6% | −4.4 pp | ±12.6 | −0.189 | 1 de 14 |
-| ADAUSDT | 40 | 0.44 | 32.5% | −5.2 pp | ±7.4 | −0.337 | 1 de 40 |
+| activo | ops | op/día | stop | acierto | azar | vs azar | margen de error | R/op | llegaron al objetivo |
+|---|---|---|---|---|---|---|---|---|---|
+| BTCUSDT | 8 | 0.09 | 0.788% | 25.0% | 28.0% | −3.0 pp | ±16.6 | −0.515 | 0 de 8 |
+| ETHUSDT | 11 | 0.12 | 0.769% | 45.5% | 32.6% | +12.9 pp | ±14.2 | −0.109 | 0 de 11 |
+| SOLUSDT | 19 | 0.21 | 0.793% | 42.1% | 35.2% | +6.9 pp | ±10.8 | −0.047 | 1 de 19 |
+| DOGEUSDT | 20 | 0.22 | 0.823% | 45.0% | 35.8% | +9.2 pp | ±10.5 | −0.190 | 1 de 20 |
+| XRPUSDT | 14 | 0.16 | 0.911% | 28.6% | 35.2% | −6.6 pp | ±12.6 | −0.189 | 1 de 14 |
+| ADAUSDT | 39 | 0.43 | 0.824% | 30.8% | 40.3% | −9.5 pp | ±7.5 | −0.321 | 1 de 39 |
 
-Puse la columna del margen de error a propósito, porque sin ella la tabla miente:
-el +15.1 de ETH parece un hallazgo y está dentro de ±14.2, o sea que es ruido.
-**Con menos de 30 operaciones no se puede afirmar nada**, y el panel ahora se
-niega a dar veredicto por debajo de ese número en lugar de inventar uno.
+Es la salida literal del botón **medir** del panel, así que lo podés reproducir
+vos mismo. Puse la columna del margen de error a propósito, porque sin ella la
+tabla miente: el +12.9 de ETH parece un hallazgo y está dentro de ±14.2, o sea
+que es ruido. **Con menos de 30 operaciones no se puede afirmar nada**, y el
+panel se niega a dar veredicto por debajo de ese número en lugar de inventar uno.
 
 Lo que sí se sostiene son los dos hechos que no dependen del tamaño de la
-muestra: **de 112 operaciones, 5 llegaron al objetivo**, y salieron entre 0.09 y
-0.44 operaciones por día cuando querías entre 3 y 5. El bot no puede "entrar y
+muestra: **de 111 operaciones, 4 llegaron al objetivo**, y salieron entre 0.09 y
+0.43 operaciones por día cuando querías entre 3 y 5. El bot no puede "entrar y
 salir continuamente" porque casi nunca se dan las condiciones que dejan un stop
 lo bastante ancho para pagar la comisión.
 

@@ -159,7 +159,7 @@ def simular(velas, cfg, mod, minutos_vela):
     return ops
 
 
-def medir(simbolo, tf, mod, cfg, dias=30):
+def medir(simbolo, tf, mod, cfg, dias=90):
     velas = historia(simbolo, tf, dias)
     minutos_vela = minutos_de(tf)
     ops = simular(velas, cfg, mod, minutos_vela)
@@ -355,8 +355,8 @@ function tarjeta(f) {
 
 async function medir(simbolo) {
   const caja = $("#m-" + simbolo);
-  caja.innerHTML = "midiendo 30 dias… (la primera vez baja la historia, tarda)";
-  const r = await fetch("api/medir?simbolo=" + simbolo + "&dias=30");
+  caja.innerHTML = "midiendo 90 dias… (la primera vez baja la historia, tarda ~30s)";
+  const r = await fetch("api/medir?simbolo=" + simbolo + "&dias=90");
   const d = await r.json();
   if (d.mensaje) { caja.innerHTML = `<div class="detalle">${d.mensaje}</div>`; return; }
   const a = d.azar || {};
@@ -438,9 +438,9 @@ class Manejador(BaseHTTPRequestHandler):
                     self._json({"mensaje": "simbolo desconocido"}, 400)
                     return
                 try:
-                    dias = max(3, min(120, int(parametros.get("dias", 30))))
+                    dias = max(3, min(180, int(parametros.get("dias", 90))))
                 except ValueError:
-                    dias = 30
+                    dias = 90
                 self._json(medir(simbolo, self.tf, self.mod, self.cfg, dias))
             else:
                 self._json({"mensaje": "no existe"}, 404)
