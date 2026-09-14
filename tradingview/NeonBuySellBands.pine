@@ -1,0 +1,135 @@
+//@version=5
+indicator("Neon Buy/Sell Bands", overlay = true, max_labels_count = 500, max_bars_back = 500)
+
+// Replica visual: carteles BUY/SELL + nubes verde/roja
+// (estilo del anuncio Tradevisor / Neon 30 + ATR 10).
+//
+// Como pegarlo en TradingView:
+// 1. Abre un grafico (ej. TVC:GOLD, 15m).
+// 2. Pine Editor -> Open -> New blank indicator.
+// 3. Borra todo, pega este script, Save, Add to chart.
+//
+// Ajustes del video: EMA 30, ATR 10.
+// Esto NO es el indicador de pago ni "IA": es EMA + ATR + Supertrend.
+// No es consejo financiero.
+
+// ── Ajustes (video: Neon 30, ATR 10) ────────────────────────────────────────
+grpVis = "Bandas neon"
+len    = input.int(30, "Longitud EMA (Neon)", minval = 1, group = grpVis)
+atrLen = input.int(10, "Longitud ATR", minval = 1, group = grpVis)
+mult   = input.float(1.6, "Ancho de banda (x ATR)", minval = 0.1, step = 0.1, group = grpVis)
+src    = input.source(close, "Fuente", group = grpVis)
+
+colUp   = input.color(#00E676, "Color banda alta / BUY", group = grpVis)
+colDn   = input.color(#FF1744, "Color banda baja / SELL", group = grpVis)
+colMid  = input.color(#00FFF0, "Color linea central", group = grpVis)
+fillUpT = input.int(72, "Transparencia nube verde", minval = 0, maxval = 95, group = grpVis)
+fillDnT = input.int(72, "Transparencia nube roja", minval = 0, maxval = 95, group = grpVis)
+showGlow = input.bool(true, "Efecto neon (glow)", group = grpVis)
+
+grpSig = "Senales BUY / SELL"
+mode = input.string("Bandas + Supertrend", "Modo de senales",
+     options = ["Rebote en bandas", "Supertrend", "Bandas + Supertrend"], group = grpSig)
+stFactor = input.float(3.0, "Factor Supertrend", minval = 0.5, step = 0.1, group = grpSig)
+stAtr    = input.int(10, "ATR Supertrend", minval = 1, group = grpSig)
+cooldown = input.int(5, "Barras minimas entre senales", minval = 1, group = grpSig)
+altOnly  = input.bool(true, "Alternar BUY y SELL (sin repetir)", group = grpSig)
+showBuy  = input.bool(true, "Mostrar carteles BUY", group = grpSig)
+showSell = input.bool(true, "Mostrar carteles SELL", group = grpSig)
+buyTxt   = input.string("BUY  🚀", "Texto BUY", group = grpSig)
+sellTxt  = input.string("SELL  😡", "Texto SELL", group = grpSig)
+lblSize  = input.string("normal", "Tamano cartel", options = ["tiny", "small", "normal", "large"], group = grpSig)
+
+grpFilt = "Filtros extra"
+useRsi   = input.bool(false, "Filtrar con RSI", group = grpFilt)
+rsiLen   = input.int(14, "RSI longitud", minval = 2, group = grpFilt)
+rsiBuy   = input.int(40, "RSI maximo para BUY", minval = 1, maxval = 100, group = grpFilt)
+rsiSell  = input.int(60, "RSI minimo para SELL", minval = 1, maxval = 100, group = grpFilt)
+colorBars = input.bool(false, "Colorear velas segun tendencia", group = grpFilt)
+showSt    = input.bool(false, "Dibujar linea Supertrend", group = grpFilt)
+
+// ── Bandas tipo Keltner (EMA 30 + ATR 10) ───────────────────────────────────
+basis = ta.ema(src, len)
+atr   = ta.atr(atrLen)
+upper = basis + atr * mult
+lower = basis - atr * mult
+innerU = basis + atr * (mult * 0.45)
+innerL = basis - atr * (mult * 0.45)
+
+slopeUp = basis > basis[1]
+
+[stLine, stDir] = ta.supertrend(stFactor, stAtr)
+stBuy  = stDir < 0 and stDir[1] > 0
+stSell = stDir > 0 and stDir[1] < 0
+
+plot(showGlow ? upper : na, "Glow alta", color.new(colUp, 82), 6)
+plot(showGlow ? lower : na, "Glow baja", color.new(colDn, 82), 6)
+pUpper = plot(upper, "Banda alta", colUp, 2)
+pInnerU = plot(innerU, "Banda interna alta", color.new(colUp, 55), 1)
+pBasis = plot(basis, "Central", slopeUp ? colMid : colDn, 2)
+pInnerL = plot(innerL, "Banda interna baja", color.new(colDn, 55), 1)
+pLower = plot(lower, "Banda baja", colDn, 2)
+
+fill(pUpper, pBasis, color.new(colUp, fillUpT), "Nube verde")
+fill(pBasis, pLower, color.new(colDn, fillDnT), "Nube roja")
+fill(pUpper, pInnerU, color.new(colUp, math.min(fillUpT + 10, 95)), "Nube verde interna")
+fill(pInnerL, pLower, color.new(colDn, math.min(fillDnT + 10, 95)), "Nube roja interna")
+plot(showSt ? stLine : na, "Supertrend", stDir < 0 ? colUp : colDn, 2)
+
+// ── Rebote en las bandas (como en la captura: BUY abajo, SELL arriba) ───────
+bullBar = close > open
+bearBar = close < open
+bandBuy  = low <= lower and close > lower and bullBar
+bandSell = high >= upper and close < upper and bearBar
+
+rsi = ta.rsi(close, rsiLen)
+rsiOkBuy  = not useRsi or rsi <= rsiBuy
+rsiOkSell = not useRsi or rsi >= rsiSell
+
+useBand = mode == "Rebote en bandas" or mode == "Bandas + Supertrend"
+useSt   = mode == "Supertrend" or mode == "Bandas + Supertrend"
+
+rawBuy  = (useBand and bandBuy) or (useSt and stBuy)
+rawSell = (useBand and bandSell) or (useSt and stSell)
+
+rawBuy  := rawBuy and rsiOkBuy
+rawSell := rawSell and rsiOkSell
+
+// Un solo disparo por barra; prioridad al Supertrend si chocan
+if rawBuy and rawSell
+    if stBuy
+        rawSell := false
+    else
+        rawBuy := false
+
+var int lastSigBar = -999999
+var int lastDir    = 0  // 1 = buy, -1 = sell
+
+canFire = lastSigBar < 0 or (bar_index - lastSigBar >= cooldown)
+buyOk  = rawBuy and canFire and (not altOnly or lastDir != 1)
+sellOk = rawSell and canFire and (not altOnly or lastDir != -1)
+
+if buyOk
+    lastSigBar := bar_index
+    lastDir    := 1
+if sellOk
+    lastSigBar := bar_index
+    lastDir    := -1
+
+sz = lblSize == "tiny" ? size.tiny : lblSize == "small" ? size.small : lblSize == "large" ? size.large : size.normal
+
+if buyOk and showBuy
+    label.new(bar_index, low, buyTxt, xloc.bar_index, yloc.price,
+         color.new(colUp, 0), label.style_label_up, color.white, sz, text.align_center)
+
+if sellOk and showSell
+    label.new(bar_index, high, sellTxt, xloc.bar_index, yloc.price,
+         color.new(colDn, 0), label.style_label_down, color.white, sz, text.align_center)
+
+barcolor(colorBars ? (slopeUp ? color.new(colUp, 40) : color.new(colDn, 40)) : na)
+
+alertcondition(buyOk,  "BUY",  "Neon BUY")
+alertcondition(sellOk, "SELL", "Neon SELL")
+
+plotshape(buyOk and not showBuy, "BUY dot", shape.triangleup, location.belowbar, colUp, size = size.tiny)
+plotshape(sellOk and not showSell, "SELL dot", shape.triangledown, location.abovebar, colDn, size = size.tiny)
