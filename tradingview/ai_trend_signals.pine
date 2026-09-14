@@ -8,8 +8,43 @@
 //  Salida:  carteles BUY / SELL, bandas verdes/rojas, niveles Entry / SL / TP,
 //           panel informativo y alertas listas para push / Discord / webhook.
 //
-//  Los valores por defecto replican los del bot (EMA 50/200, RSI 14, ATR 14,
-//  SL = 2.2 x ATR) para que el grafico y el bot cuenten la misma historia.
+//  Los valores por defecto replican los del bot (EMA 50/200, RSI 14, ATR 14).
+//
+// -----------------------------------------------------------------------------
+//  EL STOP: POR QUE AHORA VIENE EN 1.4 Y NO EN 2.2
+//
+//  Barrido del multiplicador sobre 8 activos de Binance y 2 anios de H1, con la
+//  comision de 0.10% incluida y objetivo 1:2. R por operacion:
+//
+//      SL = 0.6 x ATR .... stop 0.57%  ....  -0.208     <- el ruido te barre
+//      SL = 1.0 x ATR .... stop 0.95%  ....  -0.125
+//      SL = 1.4 x ATR .... stop 1.34%  ....  -0.077     <- el mejor apretado
+//      SL = 1.8 x ATR .... stop 1.72%  ....  -0.079
+//      SL = 2.2 x ATR .... stop 2.14%  ....  -0.123     <- venia asi
+//      SL = 2.6 x ATR .... stop 2.56%  ....  -0.090
+//      SL = 4.0 x ATR .... stop 4.12%  ....  -0.070
+//
+//  Hay un punto optimo alrededor de 1.4-1.8, y de ahi para abajo se cae rapido.
+//  El motivo: por debajo de 1.4 el stop entra en la zona donde el ruido normal
+//  de la vela lo toca antes de que el movimiento se desarrolle, y ademas la
+//  comision empieza a pesar (0.18 R con stop de 0.57% contra 0.07 R con 1.34%).
+//
+//  El 1.4 aguanta las pruebas que importan: le gana al 2.2 en las DOS mitades
+//  del periodo (-0.090 contra -0.107 en la primera, -0.061 contra -0.145 en la
+//  segunda) y en 6 de los 8 activos. Es lo unico de todo este proyecto que paso
+//  una prueba de persistencia.
+//
+//  DOS ADVERTENCIAS QUE HAY QUE LEER:
+//
+//  1. En M30 es al REVES: apretar empeora (1.4 da -0.124 y 2.2 da -0.070). Si
+//     operas M30, dejalo en 2.2 o subilo a 2.6.
+//  2. TODA la grilla es negativa. El 1.4 es el menos malo, no un ganador. Con
+//     acierto del 33%, que es exactamente el de tirar una moneda con objetivo
+//     1:2, lo que queda por pagar es la comision. Sirve para colocar el stop de
+//     forma consistente y mas corta, no para operar en automatico.
+//
+//  BTC y ETH son los dos peores activos para esta regla (-0.271 y -0.123). Los
+//  mejores fueron ADA, XRP y LINK, los tres apenas por encima de cero.
 // =============================================================================
 
 //@version=5
@@ -38,7 +73,7 @@ htfRes = input.timeframe("240", "Timeframe superior", group=gFilters)
 
 gRisk = "③ Gestion — Entry / SL / TP"
 showLevels = input.bool(true, "Dibujar Entry / SL / TP", group=gRisk)
-slMult     = input.float(2.2, "Stop Loss = ATR ×", minval=0.1, step=0.1, group=gRisk)
+slMult     = input.float(1.4, "Stop Loss = ATR ×", minval=0.1, step=0.1, group=gRisk, tooltip="1.4 en H1. Antes venia en 2.2 y al medirlo salio peor.\n\nEn 8 activos y 2 anios de H1 con comision incluida, 1.4 le gana a 2.2 en las DOS mitades del periodo (-0.090 vs -0.107 en la primera, -0.061 vs -0.145 en la segunda) y en 6 de los 8 activos. El stop pasa de 2.14% a 1.34% del precio, o sea un 37% mas corto, que es lo que se buscaba.\n\nOJO EN M30: ahi es al revés, apretar empeora. En M30 dejalo en 2.2 o subilo a 2.6.\n\nNo bajes de 1.4: con 1.0 el resultado cae a -0.125 y con 0.6 a -0.208, porque el ruido te barre antes de que el movimiento se desarrolle.\n\nBTC y ETH son los dos peores activos para esta regla (-0.271 y -0.123).")
 tp1R       = input.float(1.0, "Take Profit 1 (en R)", minval=0.1, step=0.1, group=gRisk)
 tp2R       = input.float(2.0, "Take Profit 2 (en R)", minval=0.1, step=0.1, group=gRisk)
 tp3R       = input.float(3.0, "Take Profit 3 (en R)", minval=0.1, step=0.1, group=gRisk)

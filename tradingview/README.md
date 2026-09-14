@@ -37,11 +37,26 @@ matemática sobre las velas). El motor es una confluencia clásica:
 | RSI 14 | filtro de momentum contra el nivel neutro (50 por defecto) |
 | Volumen (opcional) | exige volumen por encima de su media |
 | Multi-timeframe (opcional) | exige que el SuperTrend del TF superior apunte igual |
-| ATR × 2.2 | distancia del stop; los TP son múltiplos de ese riesgo (1R / 2R / 3R) |
+| ATR × 1.4 | distancia del stop; los TP son múltiplos de ese riesgo (1R / 2R / 3R) |
 
-Los valores por defecto son los mismos que usa el bot de este repo (`cerebro.py`:
-EMA 50/200, RSI 14, ATR 14, `ATR_MULTIPLICADOR_SL = 2.2`), así el gráfico y el
-bot cuentan la misma historia.
+Los valores por defecto son los mismos que usa el bot de este repo (EMA 50/200,
+RSI 14, ATR 14), así el gráfico y el bot cuentan la misma historia. La excepción
+es el multiplicador del stop: el bot lo usa como **piso** combinado con el borde
+del Order Block (`sl_atr = 1.5`), que es otro papel, así que el barrido de acá
+abajo no se le aplica directamente y lo dejé como estaba.
+
+**El stop pasó de 2.2 a 1.4 × ATR**, y no por gusto. Barrido sobre 8 activos y 2
+años de H1 con comisión incluida: el 1.4 deja el stop en 1.34% del precio en vez
+de 2.14% (un 37% más corto) y midió mejor que el 2.2 en **las dos mitades del
+período y en 6 de los 8 activos**. Es lo único de todo el repo que pasó una
+prueba de persistencia. Por debajo de 1.4 se cae rápido, porque el ruido de la
+vela toca el stop antes de que el movimiento arranque: con 1.0 da −0.125 y con
+0.6 da −0.208, contra −0.077 del 1.4.
+
+Dos advertencias: **en M30 es al revés** (ahí apretar empeora, dejalo en 2.2 o
+subilo a 2.6), y toda la grilla sigue siendo negativa, así que el 1.4 es el menos
+malo y no un ganador. Los detalles están en la cabecera del `.pine` y en
+[`bot/README.md`](../bot/README.md).
 
 Se emite **una sola señal por tramo de tendencia**: se "arma" en el giro del
 SuperTrend y se dispara en la primera vela en que todos los filtros dan luz
