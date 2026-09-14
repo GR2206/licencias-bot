@@ -1,3 +1,21 @@
+# Indicadores para TradingView
+
+Tres scripts que se usan juntos:
+
+| Script | Para qué |
+| --- | --- |
+| [`ai_trend_signals.pine`](./ai_trend_signals.pine) | el padre: carteles BUY/SELL y bandas de tendencia |
+| [`order_blocks.pine`](./order_blocks.pine) | Order Blocks en rectángulos + máximos/mínimos diarios punteados |
+| [`confluence_engine.pine`](./confluence_engine.pine) | une los dos y marca la entrada con SL/TP 1:3 y alerta JSON |
+
+El tercero es el que le da las órdenes al [bot](../bot/README.md). Los dos
+primeros son para mirar.
+
+Lo que sigue documenta el primero; los otros dos tienen su explicación en la
+cabecera de cada archivo.
+
+---
+
 # AI Trend Signals — indicador para TradingView
 
 Indicador en Pine Script v5 que reproduce el tipo de visual que venden como

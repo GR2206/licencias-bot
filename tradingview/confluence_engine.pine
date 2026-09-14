@@ -12,12 +12,16 @@
 //  con el impulso), se opera cuando el precio VUELVE a el. Entonces:
 //
 //    1. Un BOS con desplazamiento deja un Order Block marcado.
-//    2. El precio retrocede y entra en ese bloque.
-//    3. Si la tendencia sigue a favor -> ENTRADA.
-//       Entry = cierre de la vela.
-//       SL    = borde lejano del bloque + colchon ATR.
+//    2. El precio se aleja (impulso real) y despues retrocede al bloque.
+//    3. La vela que entra en la zona tiene que cerrar A FAVOR del trade. Sin
+//       esa reaccion no se opera: seria comprar un cuchillo cayendo.
+//    4. Si la tendencia sigue a favor -> ENTRADA.
+//       Entry = cierre de esa vela.
+//       SL    = borde lejano del bloque + colchon ATR (o una distancia minima
+//               en ATR, para que una mecha no lo barra).
 //       TP    = Entry + riesgo x RR  (RR = 3 por defecto).
-//    4. Cada bloque se usa UNA sola vez.
+//       1R    = nivel para cerrar la mitad y mover el stop a la entrada.
+//    5. Cada bloque se usa UNA sola vez.
 //
 //  La alerta sale en JSON listo para un webhook. Pensado para H1 y M30.
 // =============================================================================
@@ -32,7 +36,7 @@ gT = "① Motor de tendencia"
 atrLen       = input.int(14, "ATR — periodo", minval=1, group=gT)
 factor       = input.float(2.6, "Sensibilidad (factor ATR)", minval=0.5, maxval=15, step=0.1, group=gT)
 confirmClose = input.bool(true, "Confirmar todo al cierre de vela", group=gT, tooltip="Dejalo activado. Es lo que evita que la senal aparezca y desaparezca dentro de la vela en curso.")
-useEma = input.bool(true, "Filtro EMA", group=gT)
+useEma = input.bool(false, "Filtro EMA", group=gT, tooltip="Apagado a proposito: en H1/M30 una EMA 200 son 8 dias de media y suele llegar tarde, porque el SuperTrend ya define el lado. Probala en tu activo antes de decidir.")
 emaLen = input.int(200, "EMA — periodo", minval=1, group=gT)
 useRsi = input.bool(true, "Filtro RSI", group=gT)
 rsiLen = input.int(14, "RSI — periodo", minval=1, group=gT)
@@ -50,9 +54,14 @@ useFvg     = input.bool(true, "Exigir imbalance / FVG", group=gOB)
 mitMode    = input.string("Cierre", "El bloque se anula por", options=["Cierre", "Mecha"], group=gOB)
 
 gE = "③ Entrada y gestion"
+confirmacion = input.string("Vela a favor", "Confirmacion en la zona", options=["Ninguna", "Vela a favor", "Cierre fuera de la zona"], group=gE, tooltip="Entrar apenas el precio toca el bloque es comprar un cuchillo cayendo. 'Vela a favor' exige que la vela cierre en la direccion del trade.")
+alejarseAtr = input.float(1.0, "El precio debe haberse alejado = ATR ×", minval=0, step=0.1, group=gE, tooltip="Obliga a que haya habido un impulso real antes del retroceso. Con 0 acepta cualquier arrastre lateral.")
 tolMult    = input.float(0.25, "Tolerancia de toque = ATR ×", minval=0, step=0.05, group=gE, tooltip="Cuanto puede faltarle al precio para considerar que toco el bloque.")
+slModo     = input.string("Borde o ATR (el mas lejano)", "Ubicacion del stop", options=["Borde del bloque", "Borde o ATR (el mas lejano)"], group=gE, tooltip="El modo ATR ensancha el stop cuando el bloque es muy fino, para que una mecha no te saque.")
+slAtr      = input.float(1.5, "Stop minimo = ATR ×", minval=0.1, step=0.1, group=gE)
 slBuf      = input.float(0.30, "Colchon del stop = ATR ×", minval=0, step=0.05, group=gE)
 rr         = input.float(3.0, "Relacion riesgo/beneficio (RR)", minval=0.5, step=0.5, group=gE)
+verParcial = input.bool(true, "Marcar la parcial de 1R", group=gE, tooltip="El nivel donde conviene cerrar la mitad y mover el stop a la entrada.")
 minRiskPct = input.float(0.15, "Riesgo minimo (% del precio)", minval=0.01, step=0.05, group=gE, tooltip="Descarta stops absurdamente pegados, donde cualquier mecha te saca.")
 maxRiskPct = input.float(3.0, "Riesgo maximo (% del precio)", minval=0.1, step=0.1, group=gE, tooltip="Si el stop queda mas lejos que esto, se descarta la operacion.")
 cooldown   = input.int(5, "Velas de espera entre entradas", minval=0, maxval=100, group=gE)
@@ -118,6 +127,9 @@ var float[] oTop  = array.new_float()
 var float[] oBot  = array.new_float()
 var int[]   oDir  = array.new_int()
 var bool[]  oUsed = array.new_bool()
+// Hasta donde llego el precio a favor desde que nacio el bloque. Con esto se
+// sabe si hubo impulso real antes del retroceso.
+var float[] oExt  = array.new_float()
 
 buscarOrigen(esAlcista) =>
     int k = -1
@@ -152,6 +164,7 @@ crearOB(esAlcista, k) =>
     array.push(oBot, b)
     array.push(oDir, esAlcista ? 1 : -1)
     array.push(oUsed, false)
+    array.push(oExt, esAlcista ? high : low)
 
 // ── Paso 1: extender los bloques vivos y dar de baja los mitigados ───────────
 if array.size(oBx) > 0
@@ -171,8 +184,11 @@ if array.size(oBx) > 0
             array.remove(oBot, i)
             array.remove(oDir, i)
             array.remove(oUsed, i)
+            array.remove(oExt, i)
         else
             box.set_right(bx, bar_index + obExtend)
+            float ext = array.get(oExt, i)
+            array.set(oExt, i, d == 1 ? math.max(ext, high) : math.min(ext, low))
 
 // ── Paso 2: crear los bloques que deja la ruptura de esta vela ───────────────
 if bosUp
@@ -191,6 +207,7 @@ while array.size(oBx) > maxOB
     array.shift(oBot)
     array.shift(oDir)
     array.shift(oUsed)
+    array.shift(oExt)
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  CONFLUENCIA: el precio vuelve a un bloque virgen del lado de la tendencia
@@ -207,7 +224,11 @@ if (longOk or shortOk) and confirmado and array.size(oBx) > 0
         if idxZona == -1 and array.get(oDir, i) == lado and not array.get(oUsed, i)
             float t = array.get(oTop, i)
             float b = array.get(oBot, i)
-            if low <= t + tol and high >= b - tol
+            float ext = array.get(oExt, i)
+            float alejamiento = lado == 1 ? ext - t : b - ext
+            bool lejosOk = alejarseAtr <= 0 or alejamiento >= atr * alejarseAtr
+            bool tocando = low <= t + tol and high >= b - tol
+            if lejosOk and tocando
                 idxZona := i
                 zonaTop := t
                 zonaBot := b
@@ -218,10 +239,27 @@ esperaOk = bar_index - ultEntrada > cooldown
 float entrada  = close
 float stop     = na
 float objetivo = na
+float parcial  = na
 
 if idxZona >= 0
     stop := longOk ? zonaBot - atr * slBuf : zonaTop + atr * slBuf
+    if slModo != "Borde del bloque"
+        stop := longOk ? math.min(stop, entrada - atr * slAtr) : math.max(stop, entrada + atr * slAtr)
     objetivo := longOk ? entrada + (entrada - stop) * rr : entrada - (stop - entrada) * rr
+    parcial := longOk ? entrada + (entrada - stop) : entrada - (stop - entrada)
+
+// La vela tiene que mostrar la reaccion: entrar apenas toca la zona es
+// comprar un cuchillo cayendo.
+bool velaOk = true
+if idxZona >= 0 and confirmacion != "Ninguna"
+    if longOk
+        velaOk := close > open
+        if confirmacion == "Cierre fuera de la zona"
+            velaOk := velaOk and close > zonaTop
+    else
+        velaOk := close < open
+        if confirmacion == "Cierre fuera de la zona"
+            velaOk := velaOk and close < zonaBot
 
 // nz() evita arrastrar na cuando no hay zona: el riesgo queda en 0 y la
 // operacion se descarta sola.
@@ -233,8 +271,8 @@ riesgoOk   = riesgoPct >= minRiskPct and riesgoPct <= maxRiskPct
 // El stop tiene que quedar del lado correcto del precio.
 coherente = longOk ? stopSeguro < entrada and objSeguro > entrada : stopSeguro > entrada and objSeguro < entrada
 
-entradaLong  = idxZona >= 0 and longOk  and riesgoOk and esperaOk and coherente
-entradaShort = idxZona >= 0 and shortOk and riesgoOk and esperaOk and coherente
+entradaLong  = idxZona >= 0 and longOk  and riesgoOk and esperaOk and coherente and velaOk
+entradaShort = idxZona >= 0 and shortOk and riesgoOk and esperaOk and coherente and velaOk
 
 if entradaLong or entradaShort
     ultEntrada := bar_index
@@ -263,6 +301,8 @@ if entradaLong or entradaShort
     color col = entradaLong ? bullCol : bearCol
     nivelOperacion(entrada,  "ENTRY", color.new(color.silver, 0), false)
     nivelOperacion(stop,     "SL",    bearCol, true)
+    if verParcial
+        nivelOperacion(parcial, "1R (parcial)", color.new(bullCol, 45), true)
     nivelOperacion(objetivo, "TP " + str.tostring(rr, "#.#") + "R", bullCol, true)
     label.new(bar_index, entradaLong ? low - atr * 0.9 : high + atr * 0.9, (entradaLong ? "LONG" : "SHORT") + " 1:" + str.tostring(rr, "#.#") + "\n" + str.tostring(entrada, format.mintick), style=entradaLong ? label.style_label_up : label.style_label_down, color=col, textcolor=color.white, size=size.normal, tooltip="Retroceso al Order Block con la tendencia a favor")
 
@@ -301,6 +341,7 @@ json = '{"secret":"' + secret + '",' +
      '"tf":"' + timeframe.period + '",' +
      '"entry":' + str.tostring(entrada, format.mintick) + ',' +
      '"sl":' + str.tostring(stop, format.mintick) + ',' +
+     '"tp1":' + str.tostring(parcial, format.mintick) + ',' +
      '"tp":' + str.tostring(objetivo, format.mintick) + ',' +
      '"rr":' + str.tostring(rr, "#.##") + ',' +
      '"risk_pct":' + str.tostring(qtyPct, "#.##") + '}'
