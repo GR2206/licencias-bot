@@ -54,6 +54,7 @@ useDisp    = input.bool(true, "Exigir desplazamiento", group=gOB)
 dispMult   = input.float(1.5, "Impulso minimo = ATR ×", minval=0.2, step=0.1, group=gOB)
 useFvg     = input.bool(true, "Exigir imbalance / FVG", group=gOB)
 mitMode    = input.string("Cierre", "El bloque se anula por", options=["Cierre", "Mecha"], group=gOB)
+maxEdad    = input.int(250, "Caducidad del bloque (velas, 0 = nunca)", minval=0, maxval=2000, group=gOB, tooltip="Un bloque de hace 900 velas ya no es una zona valida. Ademas el bot solo ve las ultimas 1500 velas, asi que sin caducidad el grafico marca senales que el bot no puede tomar. 250 velas son ~10 dias en H1.")
 
 gE = "③ Entrada y gestion"
 confirmacion = input.string("Vela a favor", "Confirmacion en la zona", options=["Ninguna", "Vela a favor", "Cierre fuera de la zona"], group=gE, tooltip="Entrar apenas el precio toca el bloque es comprar un cuchillo cayendo. 'Vela a favor' exige que la vela cierre en la direccion del trade.")
@@ -132,6 +133,8 @@ var bool[]  oUsed = array.new_bool()
 // Hasta donde llego el precio a favor desde que nacio el bloque. Con esto se
 // sabe si hubo impulso real antes del retroceso.
 var float[] oExt  = array.new_float()
+// Vela en la que nacio, para poder caducarlo.
+var int[]   oNace = array.new_int()
 
 buscarOrigen(esAlcista) =>
     int k = -1
@@ -167,6 +170,7 @@ crearOB(esAlcista, k) =>
     array.push(oDir, esAlcista ? 1 : -1)
     array.push(oUsed, false)
     array.push(oExt, esAlcista ? high : low)
+    array.push(oNace, bar_index)
 
 // ── Paso 1: extender los bloques vivos y dar de baja los mitigados ───────────
 if array.size(oBx) > 0
@@ -175,18 +179,26 @@ if array.size(oBx) > 0
         float b  = array.get(oBot, i)
         int   d  = array.get(oDir, i)
         box   bx = array.get(oBx, i)
-        bool anulado = d == 1 ? (mitMode == "Cierre" ? close < b : low < b) : (mitMode == "Cierre" ? close > t : high > t)
+        bool mitigado = d == 1 ? (mitMode == "Cierre" ? close < b : low < b) : (mitMode == "Cierre" ? close > t : high > t)
+        bool vencido  = maxEdad > 0 and (bar_index - array.get(oNace, i)) > maxEdad
+        bool anulado  = mitigado or vencido
         if anulado
-            color col = d == 1 ? bullCol : bearCol
-            box.set_bgcolor(bx, color.new(col, math.min(99, obTransp + 12)))
-            box.set_border_color(bx, color.new(col, 55))
-            box.set_border_style(bx, line.style_dashed)
+            if mitigado
+                // Mitigado: queda dibujado en punteado como registro de lo que paso.
+                color col = d == 1 ? bullCol : bearCol
+                box.set_bgcolor(bx, color.new(col, math.min(99, obTransp + 12)))
+                box.set_border_color(bx, color.new(col, 55))
+                box.set_border_style(bx, line.style_dashed)
+            else
+                // Vencido sin que el precio lo toque: no hay nada que registrar.
+                box.delete(bx)
             array.remove(oBx, i)
             array.remove(oTop, i)
             array.remove(oBot, i)
             array.remove(oDir, i)
             array.remove(oUsed, i)
             array.remove(oExt, i)
+            array.remove(oNace, i)
         else
             box.set_right(bx, bar_index + obExtend)
             float ext = array.get(oExt, i)
@@ -210,6 +222,7 @@ while array.size(oBx) > maxOB
     array.shift(oDir)
     array.shift(oUsed)
     array.shift(oExt)
+    array.shift(oNace)
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  CONFLUENCIA: el precio vuelve a un bloque virgen del lado de la tendencia

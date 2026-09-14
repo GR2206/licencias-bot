@@ -27,14 +27,81 @@ Traducido: **la mejor configuración queda en el borde del break-even**. +1.4R
 en 124 operaciones es ruido estadístico, no una ventaja. Con RR 1:3 hace falta
 acertar más del 25% para no perder, y el sistema anda justo ahí.
 
+Después estiré la muestra a **2.3 años sobre CHZ** (231 operaciones) y ahí la
+respuesta dejó de ser ambigua: da negativo, y de 432 combinaciones de parámetros
+sólo el 22% queda positivo en las dos temporalidades, cuando el azar puro daría
+~25%. Los números están en la sección de CHZ, más abajo. **No hay ventaja
+demostrable.**
+
 Por eso el bot arranca en `MODO=simulacion` y por eso insisto abajo con el
-testnet. No es burocracia: es que todavía no hay evidencia de que esto gane
-plata, y las comisiones (0.10% ida y vuelta) se comen buena parte de cada
-operación.
+testnet. No es burocracia: es que la evidencia dice que esto no gana plata, y las
+comisiones (0.10% ida y vuelta) se llevan otra parte de cada operación.
 
 Lo que sí funciona bien es la **parte visual**: marcar Order Blocks con reglas
 mecánicas y ver la confluencia en el gráfico. Como herramienta para decidir a
 mano, sirve. Como piloto automático, todavía no.
+
+## CHZUSDT: lo que dan los datos
+
+Hay un archivo listo para este caso: [`config.chzusdt.env`](config.chzusdt.env).
+
+```bash
+cp config.chzusdt.env config.env
+nano config.env        # completá las dos claves y listo
+```
+
+Viene con `ENTORNO=real` y `MODO=simulacion`: lee el mercado y tu saldo reales,
+pero no manda ninguna orden. La única línea que lo hace operar de verdad es
+`MODO=real`. Antes de tocarla, leé lo que sigue.
+
+Probado sobre CHZ real de OKX (mismo precio que Binance), **2.3 años en H1 y 1.1
+en M30**, con comisiones del 0.10% ida y vuelta:
+
+| | Período | Operaciones | Aciertos | Resultado | Peor caída |
+| --- | --- | --- | --- | --- | --- |
+| **CHZ H1** | jun 2024 – sep 2026 | 117 | 50.4% | **−3.0R** | −22.8R |
+| **CHZ M30** | jul 2025 – sep 2026 | 114 | 49.1% | **−6.6R** | −13.3R |
+
+Con 231 operaciones ya no es ruido: **sobre CHZ esta lógica no tiene ventaja.**
+Queda apenas por debajo de cero, y la peor racha en H1 fue de −22.8R (con
+`RIESGO_PCT=0.5` eso es −11% de la cuenta; con 1%, −23%).
+
+Y no es cuestión de encontrar los parámetros justos. Probé 432 combinaciones de
+pivote, FVG, confirmación, EMA, RR, sensibilidad y parcial, midiendo cada una en
+H1 y en M30:
+
+- **93 de 432 (22%) dan positivo en las dos temporalidades.** Si no hubiera
+  ninguna ventaja y el ruido fuera simétrico, saldría ~25%. O sea: la familia
+  entera rinde como una moneda, o un poco peor.
+- Los parámetros que más "mejoran" se contradicen entre temporalidades. Quitar
+  el filtro FVG da +0.101R por operación en H1 y −0.012R en M30. La EMA 200 da
+  +0.059R en M30 y −0.015R en H1. Elegir el que quedó lindo en un lado es
+  ajustar a los datos, no encontrar una ventaja.
+- El **único** parámetro con dirección consistente es el objetivo: RR 1:2 da
+  −0.032R por operación, 1:3 da −0.014R y 1:4 da +0.030R, positivo en las dos
+  temporalidades. Coincide con lo que se ve midiendo el recorrido: en H1, 31% de
+  las señales llegan a 3R y 25% pasan de 4R (una llegó a 13.8R). Las pocas que
+  corren mucho son las que pagan todo. Si vas a tocar algo, probá `RR=4`.
+
+Lo que sí conviene saber para usarlo:
+
+**Da muy pocas señales.** Una operación cada 7 días. Si lo dejás corriendo y no
+pasa nada por una semana, no está roto: es así. Con los valores por defecto daba
+la mitad todavía, porque CHZ es volátil y sus stops quedan a 2–4% del precio,
+así que el tope de 3% descartaba casi todo. En este archivo `RIESGO_MAX_PCT=5`.
+Eso **no** aumenta el riesgo de la cuenta (ese lo fija `RIESGO_PCT`): un stop
+más ancho da una posición más chica, nada más.
+
+**La parcial baja la varianza, no sube la ganancia.** Cerrar la mitad en 1R sube
+el porcentaje de aciertos al 50% y hace la curva más suave, pero le corta la
+mitad a las operaciones que se van 4R o más, que son justamente las que pagan
+todo. En el promedio de las 432 combinaciones el efecto se cancela.
+`PARCIAL_1R` es un interruptor en el env.
+
+**Por qué la muestra larga importa.** Con las primeras 3000 velas (4 meses) H1
+daba +2.9R en 16 operaciones y parecía que funcionaba. Estirando a 2.3 años, esas
+mismas reglas dan −3.0R en 117. Los 16 primeros eran suerte. Si te alcanza para
+16 operaciones, no te alcanza para decidir nada.
 
 ## Instalación en Termux
 
@@ -94,18 +161,25 @@ python bot.py
 **2. Mirá el historial.** Cuántas señales da y cómo habrían salido:
 
 ```bash
-python probar.py BTCUSDT 1h 1500
-python probar.py ETHUSDT 30m 1500
+python probar.py CHZUSDT 1h 1500
+python probar.py CHZUSDT 30m 1500
 ```
 
-**3. Verificá la mecánica.** Prueba de integración sin tocar tu cuenta:
-comprueba que se manden entrada + stop + parcial + objetivo, que el stop vaya
-después de la entrada, que el tamaño respete el riesgo y que al cobrarse la
-parcial el stop se mueva a la entrada.
+**3. Verificá la mecánica.** Prueba de integración sin tocar tu cuenta: usa los
+filtros reales del símbolo (tick, paso de lote) y comprueba que se manden
+entrada + stop + parcial + objetivo, que el stop vaya después de la entrada, que
+el tamaño respete el riesgo y que al cobrarse la parcial el stop se mueva a la
+entrada.
 
 ```bash
-python prueba_integracion.py
+python prueba_integracion.py CHZUSDT 1h
+python prueba_integracion.py CHZUSDT 30m
 ```
+
+CHZ cotiza a ~0.015 y se opera en tokens enteros, así que las cantidades son
+grandes: con 1000 USDT y `RIESGO_PCT=0.5` una posición son ~13.500 CHZ (200 USDT
+de nocional, 40 de margen con x5). Con una cuenta de 50 USDT también entra: el
+mínimo de Binance es 5 USDT de nocional.
 
 **4. Testnet con claves de juguete.** Sacá claves gratis en
 [testnet.binancefuture.com](https://testnet.binancefuture.com), ponelas en
@@ -158,7 +232,12 @@ el stop llegue a actuar.
 | `binance_api.py` | cliente REST firmado (real o testnet) |
 | `probar.py` | simulación sobre historia real, con comisiones |
 | `prueba_integracion.py` | verifica el camino de órdenes sin tocar la cuenta |
-| `config.example.env` | plantilla de configuración |
+| `config.example.env` | plantilla de configuración, con todo explicado |
+| `config.chzusdt.env` | plantilla ya ajustada para CHZUSDT en H1 y M30 |
+
+Todos los parámetros de la estrategia se pueden cambiar desde el `.env` en
+MAYÚSCULAS (`RR`, `PIVOTE`, `RIESGO_MAX_PCT`, `EXIGIR_FVG`, `PARCIAL_1R`…). No
+hace falta editar código para afinar un activo.
 
 `config.env`, `estado.json` y `bot.log` están en `.gitignore`: tus claves no se
 suben a ningún lado.
@@ -172,8 +251,15 @@ suben a ningún lado.
   pero exige manejar fills parciales.
 - **Sin reintentos finos.** Si Binance rechaza una orden, el bot lo registra y
   sigue. Revisá el log.
+- **La ventana de velas importa.** El bot solo ve las últimas `VELAS` velas. Si
+  un Order Block quedó fuera de esa ventana, para el bot no existe, y entonces
+  opera distinto a lo que probaste. Medido en CHZ M30: con `VELAS=500` y bloques
+  sin caducidad se perdía 1 de cada 8 señales. Por eso `VELAS=1500` (el máximo de
+  Binance) y `EDAD_MAX_BLOQUE=250`; con eso el vivo y el backtest coinciden al
+  100%. El bot avisa al arrancar si la combinación no cierra.
 - **Reinicio.** El estado vive en `estado.json`. Si lo borrás con una posición
   abierta, el bot pierde el hilo de la parcial (la posición sigue con su SL y
   TP en Binance, eso no se pierde).
-- **La muestra de las pruebas es corta**: 4 meses y 3 activos. No alcanza para
-  afirmar nada con confianza.
+- **Lo probado es CHZ (2.3 años) más BTC/ETH/SOL (4 meses).** En CHZ, que es la
+  muestra larga, el resultado es negativo. No hay razón para suponer que en otro
+  activo va a ser distinto sin medirlo antes con la misma cantidad de historia.
