@@ -1,0 +1,230 @@
+// =============================================================================
+//  AI TREND SIGNALS — BUY / SELL + BANDAS DE VOLATILIDAD
+// =============================================================================
+//  Indicador para TradingView (Pine Script v5).
+//
+//  Motor:   SuperTrend (ATR) para definir el sesgo y dibujar la banda de color.
+//  Filtros: EMA de tendencia, RSI, volumen y confirmacion multi-timeframe.
+//  Salida:  carteles BUY / SELL, bandas verdes/rojas, niveles Entry / SL / TP,
+//           panel informativo y alertas listas para push / Discord / webhook.
+//
+//  Los valores por defecto replican los del bot (EMA 50/200, RSI 14, ATR 14,
+//  SL = 2.2 x ATR) para que el grafico y el bot cuenten la misma historia.
+// =============================================================================
+
+//@version=5
+indicator("AI Trend Signals — BUY/SELL + Bands", shorttitle="AI Signals", overlay=true, max_labels_count=500, max_lines_count=500)
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  INPUTS
+// ─────────────────────────────────────────────────────────────────────────────
+gEngine = "① Motor de senales"
+atrLen       = input.int(14, "ATR — periodo", minval=1, group=gEngine)
+factor       = input.float(2.6, "Sensibilidad (factor ATR)", minval=0.5, maxval=15, step=0.1, group=gEngine, tooltip="Valor bajo = mas senales y mas ruido. Valor alto = menos senales, mas tendencia.")
+confirmClose = input.bool(true, "Confirmar senal al cierre de vela", group=gEngine, tooltip="Recomendado. Si lo desactivas las senales pueden aparecer y desaparecer dentro de la vela en curso (repintado).")
+
+gFilters = "② Filtros de confluencia"
+useEma = input.bool(true,  "Filtro de tendencia (EMA)", group=gFilters)
+emaLen = input.int(200, "EMA — periodo", minval=1, group=gFilters)
+useEma2 = input.bool(true, "Mostrar EMA rapida", group=gFilters)
+emaLen2 = input.int(50, "EMA rapida — periodo", minval=1, group=gFilters)
+useRsi = input.bool(true,  "Filtro RSI", group=gFilters)
+rsiLen = input.int(14, "RSI — periodo", minval=1, group=gFilters)
+rsiMid = input.float(50, "RSI — nivel neutro", minval=1, maxval=99, group=gFilters, tooltip="BUY exige RSI por encima de este nivel, SELL por debajo.")
+useVol = input.bool(false, "Filtro de volumen (> media)", group=gFilters)
+volLen = input.int(20, "Volumen — media", minval=1, group=gFilters)
+useHtf = input.bool(false, "Confirmacion multi-timeframe", group=gFilters)
+htfRes = input.timeframe("240", "Timeframe superior", group=gFilters)
+
+gRisk = "③ Gestion — Entry / SL / TP"
+showLevels = input.bool(true, "Dibujar Entry / SL / TP", group=gRisk)
+slMult     = input.float(2.2, "Stop Loss = ATR ×", minval=0.1, step=0.1, group=gRisk)
+tp1R       = input.float(1.0, "Take Profit 1 (en R)", minval=0.1, step=0.1, group=gRisk)
+tp2R       = input.float(2.0, "Take Profit 2 (en R)", minval=0.1, step=0.1, group=gRisk)
+tp3R       = input.float(3.0, "Take Profit 3 (en R)", minval=0.1, step=0.1, group=gRisk)
+levelBars  = input.int(30, "Largo de las lineas (velas)", minval=5, maxval=200, group=gRisk)
+
+gStyle = "④ Estilo"
+bandMode   = input.string("Tendencia", "Tipo de banda", options=["Tendencia", "Canal", "Ambas"], group=gStyle, tooltip="Tendencia = banda que sigue al SuperTrend. Canal = envolvente ATR alrededor de la media.")
+bandMult   = input.float(1.2, "Ancho de banda (ATR ×)", minval=0.1, step=0.1, group=gStyle)
+chanLen    = input.int(34, "Canal — media", minval=1, group=gStyle)
+chanMult   = input.float(2.0, "Canal — ancho (ATR ×)", minval=0.1, step=0.1, group=gStyle)
+showLabels = input.bool(true, "Carteles BUY / SELL", group=gStyle)
+labelPrice = input.bool(true, "Incluir precio en el cartel", group=gStyle)
+colorBars  = input.bool(true, "Pintar velas segun tendencia", group=gStyle)
+showPanel  = input.bool(true, "Panel informativo", group=gStyle)
+bullCol    = input.color(#00e5a0, "Color alcista", group=gStyle)
+bearCol    = input.color(#ff3c5f, "Color bajista", group=gStyle)
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  CALCULOS
+// ─────────────────────────────────────────────────────────────────────────────
+atrVal = ta.atr(atrLen)
+emaVal = ta.ema(close, emaLen)
+emaFast = ta.ema(close, emaLen2)
+rsiVal = ta.rsi(close, rsiLen)
+volAvg = ta.sma(volume, volLen)
+
+[stLine, stDir] = ta.supertrend(factor, atrLen)
+bull = stDir < 0
+
+// Confirmacion en timeframe superior (mismo motor, otra temporalidad)
+[htfLine, htfDir] = request.security(syminfo.tickerid, htfRes, ta.supertrend(factor, atrLen), lookahead=barmerge.lookahead_off)
+htfBull = htfDir < 0
+
+// Filtros
+volOk = not useVol or (not na(volume) and volume > volAvg)
+longOk  = (not useEma or close > emaVal) and (not useRsi or rsiVal > rsiMid) and (not useHtf or htfBull)        and volOk
+shortOk = (not useEma or close < emaVal) and (not useRsi or rsiVal < rsiMid) and (not useHtf or not htfBull)    and volOk
+
+// Cambio de tendencia
+flipUp = bull and not bull[1]
+flipDn = not bull and bull[1]
+
+// Una sola senal por tramo de tendencia: se arma en el giro y se dispara en la
+// primera vela donde los filtros dan luz verde.
+var bool armLong  = false
+var bool armShort = false
+if flipUp
+    armLong  := true
+    armShort := false
+if flipDn
+    armShort := true
+    armLong  := false
+
+allowed = confirmClose ? barstate.isconfirmed : true
+buy  = armLong  and bull       and longOk  and allowed
+sell = armShort and not bull   and shortOk and allowed
+if buy
+    armLong := false
+if sell
+    armShort := false
+
+trendCol = bull ? bullCol : bearCol
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  BANDAS
+// ─────────────────────────────────────────────────────────────────────────────
+showTrendBand = bandMode == "Tendencia" or bandMode == "Ambas"
+showChanBand  = bandMode == "Canal"     or bandMode == "Ambas"
+
+bandOuter = bull ? stLine - atrVal * bandMult : stLine + atrVal * bandMult
+bandMid   = math.avg(stLine, bandOuter)
+
+// Se dibujan dos juegos de plots (alcista / bajista) para que la banda no
+// arrastre una linea vertical al cambiar de color.
+pUpIn  = plot(showTrendBand and bull ? stLine    : na, "Tendencia alcista",  color=bullCol, linewidth=2)
+pUpMid = plot(showTrendBand and bull ? bandMid   : na, "Banda alcista media", color=color.new(bullCol, 100))
+pUpOut = plot(showTrendBand and bull ? bandOuter : na, "Banda alcista borde", color=color.new(bullCol, 70))
+fill(pUpIn,  pUpMid, color=color.new(bullCol, 72), title="Banda alcista interna")
+fill(pUpMid, pUpOut, color=color.new(bullCol, 88), title="Banda alcista externa")
+
+pDnIn  = plot(showTrendBand and not bull ? stLine    : na, "Tendencia bajista", color=bearCol, linewidth=2)
+pDnMid = plot(showTrendBand and not bull ? bandMid   : na, "Banda bajista media", color=color.new(bearCol, 100))
+pDnOut = plot(showTrendBand and not bull ? bandOuter : na, "Banda bajista borde", color=color.new(bearCol, 70))
+fill(pDnIn,  pDnMid, color=color.new(bearCol, 72), title="Banda bajista interna")
+fill(pDnMid, pDnOut, color=color.new(bearCol, 88), title="Banda bajista externa")
+
+chanMid = ta.ema(close, chanLen)
+chanUp  = chanMid + atrVal * chanMult
+chanDn  = chanMid - atrVal * chanMult
+pChUp  = plot(showChanBand ? chanUp  : na, "Canal superior", color=color.new(trendCol, 45), linewidth=1)
+pChDn  = plot(showChanBand ? chanDn  : na, "Canal inferior", color=color.new(trendCol, 45), linewidth=1)
+plot(showChanBand ? chanMid : na, "Canal medio", color=color.new(trendCol, 55), linewidth=1, style=plot.style_line)
+fill(pChUp, pChDn, color=color.new(trendCol, 92), title="Relleno del canal")
+
+plot(useEma  ? emaVal  : na, "EMA lenta", color=color.new(color.gray, 30), linewidth=2)
+plot(useEma2 ? emaFast : na, "EMA rapida", color=color.new(color.orange, 40), linewidth=1)
+
+barcolor(colorBars ? color.new(trendCol, 25) : na, title="Color de velas")
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  CARTELES BUY / SELL
+// ─────────────────────────────────────────────────────────────────────────────
+buyTxt  = labelPrice ? "BUY\n"  + str.tostring(close, format.mintick) : "BUY"
+sellTxt = labelPrice ? "SELL\n" + str.tostring(close, format.mintick) : "SELL"
+
+if showLabels and buy
+    label.new(bar_index, low - atrVal * 0.8, buyTxt, style=label.style_label_up, color=bullCol, textcolor=color.white, size=size.normal, tooltip="BUY — tendencia alcista confirmada")
+if showLabels and sell
+    label.new(bar_index, high + atrVal * 0.8, sellTxt, style=label.style_label_down, color=bearCol, textcolor=color.white, size=size.normal, tooltip="SELL — tendencia bajista confirmada")
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  NIVELES ENTRY / SL / TP
+// ─────────────────────────────────────────────────────────────────────────────
+var line[]  lvlLines  = array.new_line()
+var label[] lvlLabels = array.new_label()
+
+limpiarNiveles() =>
+    while array.size(lvlLines) > 0
+        line.delete(array.pop(lvlLines))
+    while array.size(lvlLabels) > 0
+        label.delete(array.pop(lvlLabels))
+
+dibujarNivel(precio, texto, col, punteada) =>
+    ln = line.new(bar_index, precio, bar_index + levelBars, precio, color=col, width=1, style=punteada ? line.style_dashed : line.style_solid)
+    lb = label.new(bar_index + levelBars, precio, texto + "  " + str.tostring(precio, format.mintick), style=label.style_label_left, color=color.new(col, 15), textcolor=color.white, size=size.tiny)
+    array.push(lvlLines, ln)
+    array.push(lvlLabels, lb)
+
+if showLevels and (buy or sell)
+    limpiarNiveles()
+    entrada = close
+    riesgo  = atrVal * slMult
+    stop    = buy ? entrada - riesgo : entrada + riesgo
+    objetivo1 = buy ? entrada + riesgo * tp1R : entrada - riesgo * tp1R
+    objetivo2 = buy ? entrada + riesgo * tp2R : entrada - riesgo * tp2R
+    objetivo3 = buy ? entrada + riesgo * tp3R : entrada - riesgo * tp3R
+    dibujarNivel(entrada,   "ENTRY", color.new(color.silver, 0), false)
+    dibujarNivel(stop,      "SL",    bearCol, true)
+    dibujarNivel(objetivo1, "TP1",   bullCol, true)
+    dibujarNivel(objetivo2, "TP2",   bullCol, true)
+    dibujarNivel(objetivo3, "TP3",   bullCol, true)
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  PANEL INFORMATIVO
+// ─────────────────────────────────────────────────────────────────────────────
+var string ultSenal = "—"
+var float  ultPrecio = na
+if buy
+    ultSenal  := "BUY"
+    ultPrecio := close
+if sell
+    ultSenal  := "SELL"
+    ultPrecio := close
+
+var table panel = table.new(position.top_right, 2, 6, border_width=1, frame_color=color.new(color.gray, 60), frame_width=1)
+
+fila(i, k, v, cv) =>
+    fondo = color.new(color.black, 15)
+    table.cell(panel, 0, i, k, text_color=color.new(color.white, 25), text_size=size.small, bgcolor=fondo, text_halign=text.align_left)
+    table.cell(panel, 1, i, v, text_color=cv, text_size=size.small, bgcolor=fondo, text_halign=text.align_right)
+
+if showPanel and barstate.islast
+    fila(0, "AI TREND SIGNALS", timeframe.period, color.new(color.white, 0))
+    fila(1, "Tendencia", bull ? "ALCISTA" : "BAJISTA", trendCol)
+    fila(2, "MTF " + htfRes, htfBull ? "ALCISTA" : "BAJISTA", htfBull ? bullCol : bearCol)
+    fila(3, "RSI(" + str.tostring(rsiLen) + ")", str.tostring(rsiVal, "#.0"), rsiVal > rsiMid ? bullCol : bearCol)
+    fila(4, "Volatilidad ATR", str.tostring(atrVal / close * 100, "#.00") + " %", color.new(color.white, 20))
+    fila(5, "Ultima senal", ultSenal + (na(ultPrecio) ? "" : " @ " + str.tostring(ultPrecio, format.mintick)), ultSenal == "BUY" ? bullCol : ultSenal == "SELL" ? bearCol : color.gray)
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  ALERTAS
+// ─────────────────────────────────────────────────────────────────────────────
+alertcondition(buy,  title="BUY",  message="BUY {{ticker}} @ {{close}} ({{interval}})")
+alertcondition(sell, title="SELL", message="SELL {{ticker}} @ {{close}} ({{interval}})")
+alertcondition(buy or sell, title="BUY o SELL", message="Nueva senal en {{ticker}} @ {{close}} ({{interval}})")
+
+// alert() manda el mensaje completo (Entry / SL / TP) a la alerta "Any alert()
+// function call". freq se pasa como literal porque Pine exige una constante.
+msgAlerta = (buy ? "BUY " : "SELL ") + syminfo.ticker + " @ " + str.tostring(close, format.mintick) +
+     " | SL " + str.tostring(buy ? close - atrVal * slMult : close + atrVal * slMult, format.mintick) +
+     " | TP1 " + str.tostring(buy ? close + atrVal * slMult * tp1R : close - atrVal * slMult * tp1R, format.mintick) +
+     " | TP2 " + str.tostring(buy ? close + atrVal * slMult * tp2R : close - atrVal * slMult * tp2R, format.mintick) +
+     " | TP3 " + str.tostring(buy ? close + atrVal * slMult * tp3R : close - atrVal * slMult * tp3R, format.mintick)
+
+if buy or sell
+    if confirmClose
+        alert(msgAlerta, alert.freq_once_per_bar_close)
+    else
+        alert(msgAlerta, alert.freq_once_per_bar)
