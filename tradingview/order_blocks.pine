@@ -19,7 +19,9 @@
 // =============================================================================
 
 //@version=5
-indicator("Order Blocks Pro + Niveles Diarios", shorttitle="OB Pro", overlay=true, max_boxes_count=500, max_lines_count=500, max_labels_count=500)
+// max_bars_back se fija a mano porque los bucles leen velas con indice variable
+// (close[i]) y Pine no siempre calcula bien cuanta historia va a necesitar.
+indicator("Order Blocks Pro + Niveles Diarios", shorttitle="OB Pro", overlay=true, max_boxes_count=500, max_lines_count=500, max_labels_count=500, max_bars_back=500)
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  INPUTS
