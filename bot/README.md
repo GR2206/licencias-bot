@@ -30,8 +30,13 @@ acertar más del 25% para no perder, y el sistema anda justo ahí.
 Después estiré la muestra a **2.3 años sobre CHZ** (231 operaciones) y ahí la
 respuesta dejó de ser ambigua: da negativo, y de 432 combinaciones de parámetros
 sólo el 22% queda positivo en las dos temporalidades, cuando el azar puro daría
-~25%. Los números están en la sección de CHZ, más abajo. **No hay ventaja
-demostrable.**
+~25%. Los números están en la sección de CHZ, más abajo.
+
+Y después lo llevé a **25 activos y un año de historia** de Binance, eligiendo
+las configuraciones en 8 activos y verificándolas en los otros 17: **10 de 384
+combinaciones (3%) dan positivo** en los activos que no se usaron para elegir.
+**No hay ventaja demostrable**, y no es cuestión de encontrar los parámetros
+justos.
 
 Por eso el bot arranca en `MODO=simulacion` y por eso insisto abajo con el
 testnet. No es burocracia: es que la evidencia dice que esto no gana plata, y las
@@ -102,6 +107,139 @@ todo. En el promedio de las 432 combinaciones el efecto se cancela.
 daba +2.9R en 16 operaciones y parecía que funcionaba. Estirando a 2.3 años, esas
 mismas reglas dan −3.0R en 117. Los 16 primeros eran suerte. Si te alcanza para
 16 operaciones, no te alcanza para decidir nada.
+
+## Recorrido por 25 activos, stops cortos y 3-5 operaciones por día
+
+Tres pedidos concretos: acortar los stops, recorrer los activos más operados de
+Binance y llegar a 3-5 operaciones por día. Los tres se pueden cumplir, y hay un
+preset que lo hace: [`config.multi.env`](config.multi.env). Lo que sigue es qué
+dieron las mediciones, porque cambia lo que conviene hacer con eso.
+
+Los datos: **un año de historia real de Binance de los 25 perpetuos USDT con más
+volumen sostenido** (mediana de 90 días, no el pico de un día), en M15 y M30.
+Unas 2.900 operaciones por configuración. Comisiones incluidas: 0.05% taker por
+lado, 0.02% maker en el objetivo.
+
+### Los stops largos: se arreglan filtrando, no moviendo el stop
+
+Probé todas las formas de acortarlo. Las que consisten en **mover el stop más
+cerca empeoran el resultado**, y hay una razón matemática, no de azar: la
+comisión es un porcentaje fijo del nocional, así que en unidades de R crece
+cuando el stop se acorta.
+
+| Cómo se acorta | Stop promedio | Comisión en R | R por operación |
+| --- | --- | --- | --- |
+| Actual (borde + 1.5 ATR) | 1.24% | 0.08R | +0.027 |
+| Sin piso ATR, colchón 0.05 | 1.15% | 0.09R | −0.025 |
+| Bloque por cuerpo, borde, colchón 0.1 | 0.97% | 0.10R | −0.130 |
+| Entrada por límite al 50% de la zona | 0.40% | 0.25R | −0.080 |
+| Entrada por límite al 80% de la zona | 0.28% | 0.36R | −0.261 |
+
+La entrada por orden límite dentro del bloque es la idea que más promete y la que
+peor sale: consigue un stop del 0.28%, y ahí la comisión sola se lleva 0.36R por
+operación. Por debajo del 1% de stop, la operación arranca debiendo demasiado.
+
+Lo que **sí** funciona es descartar los setups cuyo stop nace largo, con
+`RIESGO_MAX_PCT`. Con el tope en 1.8% el stop promedio baja a **1.13%** y el
+resultado por operación no se mueve. Es la diferencia entre elegir mejor y
+apretar más.
+
+### Las 3-5 operaciones por día: alcanzables
+
+Con la configuración de stop corto, medido sobre el año:
+
+| Canasta | Operaciones por día |
+| --- | --- |
+| 1 activo en H1 | 0.1 |
+| 1 activo en M30 | 0.20 |
+| 1 activo en M15 | 0.47 |
+| 8 activos en M15 (el preset) | **3.96** |
+| 12 activos en M15 + M30 | 8.0 |
+
+Así que sí: M15 con 8 activos da el ritmo que buscás. Para eso el bot ahora
+revisa una sola vez por vela cerrada y lee todas las posiciones en un pedido
+único; un barrido de 8 símbolos pesa 16 contra el límite de 2400 por minuto de
+Binance.
+
+### Qué activo recomiendo: ninguno, y esto es lo que lo demuestra
+
+Partí el año en dos mitades y comparé el rendimiento de cada activo:
+
+| Activo | R/op 1ª mitad | R/op 2ª mitad |
+| --- | --- | --- |
+| PAXGUSDT | +0.638 | +0.123 |
+| AVAXUSDT | +0.236 | −0.043 |
+| SOLUSDT | +0.207 | +0.031 |
+| BTCUSDT | +0.047 | −0.120 |
+| … | | |
+| LINKUSDT | −0.246 | +0.074 |
+| AAVEUSDT | −0.283 | −0.130 |
+
+**Los 12 mejores de la primera mitad rindieron −0.008R en la segunda; los 13
+peores, −0.111R.** Hay un rastro de señal, pero los "mejores" siguen dando cero.
+Elegir el activo por su historial no identifica al que va a andar bien. Por eso
+el preset elige por **liquidez**, que sí predice algo real: menos spread y menos
+slippage.
+
+De 25 activos, los únicos positivos en las dos mitades fueron PAXG (oro) y XLM.
+Con 25 pruebas, que 2 pasen es exactamente lo que da el azar.
+
+### Los patrones y las rachas que buscabas
+
+Todo medido eligiendo en la primera mitad del año y comprobando en la segunda:
+
+- **Horarios.** Las 15 horas del día que rindieron positivo en la primera mitad
+  dieron −0.068R en la segunda, peor que las horas descartadas (−0.050R). No hay
+  franja horaria que se sostenga.
+- **Días de la semana.** Jueves y viernes dieron positivo en las dos mitades
+  (+0.10/+0.12 y +0.50/+0.08), pero con 7 días probados que uno o dos parezcan
+  consistentes es lo esperable por azar, y el viernes se desinfló de +0.50 a
+  +0.08.
+- **Rachas.** La operación siguiente a una ganadora rindió −0.064R con 20.7% de
+  acierto; la siguiente a una perdedora, −0.004R con 22.0%. Ganar no hace más
+  probable volver a ganar: si algo, un poco menos. **No hay rachas que seguir**,
+  cada operación es independiente de la anterior.
+- **Salidas dinámicas.** Probé 8 modelos de salida, incluido trailing de 1.5 a 3
+  ATR y trailing que arranca en 1R o 2R. El trailing sí captura los movimientos
+  largos (hubo una operación de +39.7R) y sube el acierto del 21% al 47%, pero
+  **los 8 dan negativo** en los activos de validación, entre −0.03R y −0.09R.
+
+### El número que resume todo
+
+Probé **384 combinaciones** de tope de riesgo, confirmación, FVG, pivote,
+sensibilidad, RR y parcial. Las elegí en 8 activos y las verifiqué en los otros
+17, que nunca se usaron para elegir:
+
+**10 de 384 (3%) dan positivo en los activos de validación.**
+
+Si la estrategia no tuviera ventaja pero tampoco desventaja, saldría cerca del
+50%. Un 3% significa que la familia entera es negativa, y que los parámetros
+lindos son ruido. La mejor combinación llega a +0.007R por operación, que es
+cero, con una caída máxima de −68R.
+
+Para la cartera completa de 25 activos: peor racha perdedora **41 operaciones
+seguidas**, peor caída acumulada **−281R** (con 0.25% de riesgo por operación,
+−70% de la cuenta).
+
+### Conclusión
+
+La máquina es más rápida que el ojo, es cierto, pero la velocidad multiplica lo
+que ya tenés. Con una esperanza de −0.046R por operación, pasar de 1 a 4
+operaciones por día no mejora la efectividad: acelera la pérdida. A 4 por día son
+~1.460 al año, unas −68R.
+
+El preset de 8 activos en M15 está armado y funciona: da el ritmo que pediste, con
+stops de 1.13% y todos los límites de Binance respetados. Está en
+`MODO=simulacion` y mi recomendación es que lo dejes ahí, mires el log unas
+semanas y compares con lo que ves en el gráfico. Los indicadores para operar a
+mano son la parte de todo esto que sí quedó buena.
+
+Podés repetir el recorrido cuando quieras, con tus propios parámetros:
+
+```bash
+python explorar.py --tf 15m --dias 180
+python explorar.py --simbolos BTCUSDT,ETHUSDT,SOLUSDT --tf 30m --dias 365
+```
 
 ## Instalación en Termux
 
@@ -230,10 +368,12 @@ el stop llegue a actuar.
 | `estrategia.py` | la lógica de confluencia, espejo del script de Pine |
 | `indicadores.py` | ATR, EMA, RSI, SuperTrend, pivotes y niveles diarios |
 | `binance_api.py` | cliente REST firmado (real o testnet) |
-| `probar.py` | simulación sobre historia real, con comisiones |
+| `probar.py` | simulación de un activo sobre historia real, con comisiones |
+| `explorar.py` | recorrido por muchos activos, con prueba de persistencia |
 | `prueba_integracion.py` | verifica el camino de órdenes sin tocar la cuenta |
 | `config.example.env` | plantilla de configuración, con todo explicado |
 | `config.chzusdt.env` | plantilla ya ajustada para CHZUSDT en H1 y M30 |
+| `config.multi.env` | canasta de 8 activos en M15, ~4 operaciones por día |
 
 Todos los parámetros de la estrategia se pueden cambiar desde el `.env` en
 MAYÚSCULAS (`RR`, `PIVOTE`, `RIESGO_MAX_PCT`, `EXIGIR_FVG`, `PARCIAL_1R`…). No
