@@ -687,6 +687,51 @@ apalancamiento no cambia el riesgo**, solo el margen que Binance retiene. Con
 x5 alcanza; ponerlo en x50 no te hace ganar más, solo te liquida antes de que
 el stop llegue a actuar.
 
+## Marcar zonas en el gráfico: `zonas.py`
+
+Pedido concreto: «marcame en estos 3 días los Order Blocks más imponentes y
+analizalos», «dame los FVG en H1», «marcá las zonas con long o short».
+
+El análisis se puede hacer entero. El dibujo directo sobre tu gráfico en vivo,
+no: el MCP oficial de TradingView expone datos, screener, fundamentales,
+noticias, listas y alertas, y **ninguna herramienta de dibujo**. Los servidores
+no oficiales sí dibujan, pero manejando tu sesión del navegador, con acceso de
+lectura y escritura a la cuenta entera.
+
+Así que el camino es al revés: `zonas.py` analiza la ventana acá y escupe un
+Pine con **esas** zonas escritas a mano. Se pega una vez y ves en el gráfico
+exactamente lo que analicé.
+
+```bash
+python zonas.py BTCUSDT 1h --dias 3      # los 3 días que pediste
+python zonas.py ETHUSDT 4h --dias 10
+python zonas.py SOLUSDT 15m --dias 1 --top 3
+```
+
+Detecta los Order Blocks con **los mismos filtros que usa el bot** (reusa
+`estrategia._buscar_origen` y `estrategia._validar`), así que lo que se marca es
+lo que el bot operaría y no una segunda versión que dice otra cosa. Suma los FVG
+de tres velas y los máximos y mínimos del día, y para cada zona da entrada, stop
+y objetivo al RR que pidas, con el riesgo en porcentaje.
+
+Las ordena por un puntaje que combina desplazamiento en ATR, volumen contra la
+media, si rompió estructura, si sigue sin mitigar y la distancia al precio.
+**El puntaje ordena la mirada, no es la probabilidad de nada**: los pesos son un
+criterio para no mirar veinte cajas iguales, no salen de una medición. Lo único
+medido de todo este repositorio es el piso del stop y el `slMult` de 1.4.
+
+Lo que sí hace es avisarte cuando la zona ya no sirve: marca «ya fue atravesada»
+y, si el precio quedó del lado equivocado, un `OJO:` explícito y puntaje
+negativo. Una zona de compra con el precio por debajo no es una entrada.
+
+El Pine que genera ubica todo por **tiempo** (`xloc.bar_time`), no contando
+velas hacia atrás: contar velas se desfasa en cuanto hay un hueco de fin de
+semana o un feriado, que es justo el caso del oro, el forex y las acciones.
+
+Es una foto, no un indicador que recalcula. A los pocos días queda vieja: se
+vuelve a correr y se pega la versión nueva. Si lo que querés es algo que se
+actualice solo, eso ya es `tradingview/order_blocks.pine`.
+
 ## Archivos
 
 | Archivo | Qué hace |
@@ -697,6 +742,7 @@ el stop llegue a actuar.
 | `scalper.py` | impulso e imbalance (FVG) con salida por tiempo, y el contador de confluencias |
 | `referencia.py` | **qué da entrar al azar**: el patrón que toda estrategia tiene que superar |
 | `panel.py` | panel web para el celular, con el botón de medir contra el azar |
+| `zonas.py` | analiza una ventana y escribe el Pine que marca esas zonas en tu gráfico |
 | `indicadores.py` | ATR, EMA, RSI, SuperTrend, pivotes y niveles diarios |
 | `binance_api.py` | cliente REST firmado (real o testnet) |
 | `probar.py` | simulación de un activo sobre historia real, con comisiones |
