@@ -583,7 +583,19 @@ cp config.example.env config.env
 No hace falta pandas ni numpy: todo está en Python puro justamente para no
 pelear con la compilación en Android.
 
-Editá `config.env` con `nano config.env`. Como mínimo:
+Para **la mesa** eso es todo: no necesita `config.env` ni claves, porque no toca
+la cuenta. Andá directo:
+
+```bash
+python mesa.py
+```
+
+y abrilo en el navegador del celular en `http://localhost:8778`. El `requests`
+del `pip install` de arriba tampoco le hace falta a `mesa.py`: usa solo la
+biblioteca estándar.
+
+Lo que sigue es para el bot que sí opera. Editá `config.env` con
+`nano config.env`. Como mínimo:
 
 ```
 ENTORNO=testnet

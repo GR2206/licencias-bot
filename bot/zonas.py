@@ -1,15 +1,27 @@
-"""Analiza una ventana de tiempo y escribe el Pine que la marca en tu grafico.
+"""Analiza una ventana, elige el trade y escribe el Pine que lo marca.
 
-    python zonas.py BTCUSDT 1h --dias 3
+    python zonas.py CHZUSDT 15m --dias 3
+    python zonas.py BTCUSDT 1h --dias 3 --mercado futuros
     python zonas.py ADAUSDT 4h --dias 10 --salida /tmp/mis_zonas.pine
-    python zonas.py SOLUSDT 15m --dias 1 --top 3
 
-Los precios salen del espejo publico de Binance, asi que por ahora esto anda con
-cripto y nada mas. Para oro, forex o acciones hace falta una fuente de velas que
-todavia no tengo: Yahoo devuelve el forex redondeado al pip y Dukascopy tarda
-demasiado. Es justo el agujero que taparia conectar el MCP de TradingView.
+Es el motor que usa mesa.py, la pantalla del celular: las dos llaman a
+analizar(), que devuelve todo en un diccionario. Una sola funcion para los dos
+frentes, porque si la pantalla calculara por su lado terminaria diciendo otro
+numero y no habria forma de saber cual de las dos tiene razon.
 
-Resuelve un problema concreto: yo puedo LEER precios y calcular donde estan las
+Devuelve, para la ventana pedida: el contexto de las temporalidades mayores, las
+zonas ordenadas, y UNA elegida con entrada como orden limite, stop y objetivo ya
+redondeados al tick del par. El mercado que se elige decide dos cosas a la vez,
+de donde salen las velas y cuanto cuesta operar, y mezclarlas es un error que no
+da ninguna senal: leer spot y cobrar comision de futuros da la mitad del piso
+del stop que corresponde.
+
+Los precios salen de Binance, asi que por ahora esto anda con cripto y nada mas.
+Para oro, forex o acciones hace falta una fuente de velas que todavia no tengo:
+Yahoo devuelve el forex redondeado al pip y Dukascopy tarda demasiado. Es justo
+el agujero que taparia conectar el MCP de TradingView.
+
+Y resuelve otro problema: yo puedo LEER precios y calcular donde estan las
 zonas, pero no puedo DIBUJAR en tu grafico de TradingView. El MCP oficial de
 TradingView no tiene ninguna herramienta de dibujo; solo datos, screener, listas
 y alertas. Los servidores no oficiales si dibujan, pero manejando tu sesion del
@@ -31,7 +43,10 @@ Lo que marca:
   * NIVELES: maximos y minimos del dia.
 
 Y las ordena por que tan imponentes son, con un puntaje explicado, para que no
-haya que mirar veinte cajas iguales.
+haya que mirar veinte cajas iguales. El puntaje ordena la mirada y nada mas: los
+pesos son un criterio, no una medicion, y no son la probabilidad de nada. El
+unico numero con sustento es el acierto que hace falta para empatar, que sale de
+la aritmetica del costo y no de una opinion.
 """
 import argparse
 import json
