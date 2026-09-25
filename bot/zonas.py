@@ -35,7 +35,7 @@ haya que mirar veinte cajas iguales.
 """
 import argparse
 import json
-import sys
+import math
 import time
 import urllib.error
 import urllib.request
@@ -151,6 +151,17 @@ def order_blocks(velas, cfg, desde_indice):
     return encontrados
 
 
+def decimales(precio):
+    """Cuantos decimales hacen falta para ver 5 cifras significativas.
+
+    Con un precio fijo se rompe en los dos extremos: CHZ a 0.0162 con 4
+    decimales muestra la zona como "0.0158 — 0.0158", que no dice nada.
+    """
+    if precio <= 0:
+        return 2
+    return max(2, 4 - int(math.floor(math.log10(precio))))
+
+
 def _volumen_relativo(velas, i, ventana=20):
     """Volumen de la vela contra la media de las 20 previas."""
     desde = max(0, i - ventana)
@@ -250,20 +261,44 @@ def puntaje(zona, velas, precio_actual):
     return puntos, motivos
 
 
-def plan(zona, atr, rr=3.0, colchon=0.25):
-    """Entrada, stop y objetivo si se operara el retroceso a la zona."""
+def plan(zona, atr, rr=3.0, colchon=0.25, costo_pct=0.10, costo_max_r=0.15):
+    """Entrada, stop y objetivo si se operara el retroceso a la zona.
+
+    El stop no puede ser tan corto como uno quiera. Con comision de ida y
+    vuelta de costo_pct, un stop de riesgo_pct paga costo_pct/riesgo_pct en
+    unidades de R: con 0.10% de costo y un stop de 0.20%, la mitad de cada
+    operacion se va en comision antes de que el precio haga nada. Asi que hay
+    un piso: costo_pct / costo_max_r. Si la zona pide un stop mas corto, se
+    ensancha hasta el piso y se avisa, porque el stop de la zona es lindo en el
+    grafico y ruinoso en la cuenta.
+    """
     if zona["direccion"] == 1:
         entrada = zona["top"]
         stop = zona["bot"] - atr * colchon
     else:
         entrada = zona["bot"]
         stop = zona["top"] + atr * colchon
+
+    riesgo_pct = abs(entrada - stop) / entrada * 100 if entrada else 0
+    piso_pct = costo_pct / costo_max_r if costo_max_r > 0 else 0.0
+    ensanchado = 0 < riesgo_pct < piso_pct
+    if ensanchado:
+        riesgo_pct = piso_pct
+        delta = entrada * piso_pct / 100
+        stop = entrada - delta if zona["direccion"] == 1 else entrada + delta
+
     riesgo = abs(entrada - stop)
     objetivo = (entrada + riesgo * rr if zona["direccion"] == 1
                 else entrada - riesgo * rr)
     return {
         "entrada": entrada, "stop": stop, "objetivo": objetivo,
-        "riesgo_pct": riesgo / entrada * 100 if entrada else 0,
+        "riesgo_pct": riesgo_pct,
+        "costo_r": costo_pct / riesgo_pct if riesgo_pct else 0.0,
+        "ensanchado": ensanchado,
+        "stop_zona_pct": abs(entrada - (zona["bot"] - atr * colchon
+                                        if zona["direccion"] == 1
+                                        else zona["top"] + atr * colchon))
+                         / entrada * 100 if entrada else 0,
     }
 
 
@@ -375,6 +410,11 @@ def main():
     p.add_argument("tf", nargs="?", default="1h")
     p.add_argument("--dias", type=float, default=3)
     p.add_argument("--rr", type=float, default=3.0)
+    p.add_argument("--costo", type=float, default=0.10,
+                   help="costo de ida y vuelta en %% (0.10 = futuros de Binance "
+                        "a mercado; 0.008 = oro en Exness Raw)")
+    p.add_argument("--costo-max-r", type=float, default=0.15, dest="costo_max_r",
+                   help="cuanto costo se tolera por operacion, en R")
     p.add_argument("--top", type=int, default=8, help="cuantas zonas mostrar")
     p.add_argument("--salida", default=None, help="donde escribir el .pine")
     args = p.parse_args()
@@ -394,14 +434,15 @@ def main():
     zonas = order_blocks(velas, cfg, desde) + fvgs(velas, desde)
     for z in zonas:
         z["puntos"], z["motivos"] = puntaje(z, velas, precio)
-        z["plan"] = plan(z, atr_final, args.rr)
+        z["plan"] = plan(z, atr_final, args.rr, costo_pct=args.costo,
+                         costo_max_r=args.costo_max_r)
         z["vivo"] = sigue_vivo(z, velas)
     zonas.sort(key=lambda z: z["puntos"], reverse=True)
     zonas = zonas[:args.top]
 
     d0 = datetime.fromtimestamp(velas[desde].tiempo / 1000, timezone.utc)
     d1 = datetime.fromtimestamp(velas[-1].tiempo / 1000, timezone.utc)
-    ancho = 4 if precio < 1 else 2
+    ancho = decimales(precio)
 
     print("=" * 78)
     print(f"{args.simbolo} {args.tf} — ventana de {args.dias} dias "
@@ -427,6 +468,13 @@ def main():
         print(f"   plan     entrada {pl['entrada']:.{ancho}f}   "
               f"SL {pl['stop']:.{ancho}f}   TP {pl['objetivo']:.{ancho}f}"
               f"   riesgo {pl['riesgo_pct']:.2f}%  a 1:{args.rr:.0f}")
+        print(f"   costo    {pl['costo_r']:.3f} R por operacion "
+              f"({args.costo:.3f}% de ida y vuelta sobre un stop de "
+              f"{pl['riesgo_pct']:.2f}%)")
+        if pl["ensanchado"]:
+            print(f"   OJO      el stop de la zona era {pl['stop_zona_pct']:.2f}%"
+                  f" y pagaba {args.costo / pl['stop_zona_pct']:.2f} R de costo."
+                  f" Ensanchado al piso de {pl['riesgo_pct']:.2f}%")
         print(f"   por que  {'; '.join(z['motivos'])}")
 
     ruta = args.salida or f"/tmp/zonas_{args.simbolo}_{args.tf}.pine"
