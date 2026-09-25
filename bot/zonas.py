@@ -122,6 +122,88 @@ def bajar(simbolo, tf, velas_totales, mercado="futuros"):
     raise RuntimeError(f"No pude bajar {simbolo} {tf} — {ultimo}")
 
 
+_ticks = {}
+
+
+def tick_de(simbolo, mercado):
+    """Tamano minimo de variacion del precio del par, o None si no se pudo saber.
+
+    Sin esto los niveles que calculamos no se pueden cargar: un SL de
+    0.015639 en CHZ, cuyo tick es 0.00001, lo rechaza el exchange. Es un
+    numero lindo en pantalla y una orden que no entra.
+    """
+    clave = (simbolo, mercado)
+    if clave in _ticks:
+        return _ticks[clave]
+
+    m = MERCADOS[mercado]
+    ruta = ("/fapi/v1/exchangeInfo" if mercado == "futuros"
+            else f"/api/v3/exchangeInfo?symbol={simbolo}")
+    tick = None
+    try:
+        datos = _pedir(f"{m['base']}{ruta}", 20)
+        for s in datos.get("symbols", []):
+            if s.get("symbol") != simbolo:
+                continue
+            for f in s.get("filters", []):
+                if f.get("filterType") == "PRICE_FILTER":
+                    tick = float(f["tickSize"])
+            if tick is None and "pricePrecision" in s:
+                tick = 10 ** -int(s["pricePrecision"])
+            break
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError,
+            OSError, KeyError, ValueError, TypeError):
+        tick = None
+
+    _ticks[clave] = tick if tick and tick > 0 else None
+    return _ticks[clave]
+
+
+def _al_tick(valor, tick, hacia=0):
+    """Redondea al tick. hacia=1 fuerza hacia arriba, -1 hacia abajo, 0 al mas cercano."""
+    if not tick or tick <= 0:
+        return valor
+    cocientes = valor / tick
+    if hacia > 0:
+        n = math.ceil(cocientes - 1e-9)
+    elif hacia < 0:
+        n = math.floor(cocientes + 1e-9)
+    else:
+        n = round(cocientes)
+    return n * tick
+
+
+def ajustar_al_tick(pl, direccion, tick, costo_pct):
+    """Lleva entrada, stop y objetivo a precios que el exchange acepta.
+
+    El stop se redondea SEPARANDOSE de la entrada y el objetivo ACERCANDOSE: asi
+    el riesgo real nunca queda mas chico que el calculado ni el premio mas
+    grande, y el RR que se informa es el peor de los dos, no el mejor. Redondear
+    para el lado conveniente es como se fabrican backtests que no se pueden
+    repetir en vivo.
+    """
+    if not tick or tick <= 0:
+        return pl
+
+    entrada = _al_tick(pl["entrada"], tick)
+    if not entrada:
+        return pl
+    largo = direccion == 1
+    stop = _al_tick(pl["stop"], tick, -1 if largo else 1)
+    objetivo = _al_tick(pl["objetivo"], tick, -1 if largo else 1)
+
+    riesgo = abs(entrada - stop)
+    riesgo_pct = riesgo / entrada * 100 if entrada else 0.0
+    pl.update({
+        "entrada": entrada, "stop": stop, "objetivo": objetivo,
+        "riesgo_pct": riesgo_pct,
+        "costo_r": costo_pct / riesgo_pct if riesgo_pct else 0.0,
+        "rr_real": abs(objetivo - entrada) / riesgo if riesgo else 0.0,
+        "tick": tick,
+    })
+    return pl
+
+
 def precio_vivo(simbolo, mercado):
     """Ultimo precio negociado, que no es el cierre de la ultima vela cerrada."""
     m = MERCADOS[mercado]
@@ -514,6 +596,42 @@ def recomendar(zonas, precio, ctx, rr):
     }
 
 
+def diagnostico(zonas, costo_pct, piso_pct, stop_max_atr, atr_pct, tf):
+    """Por que no hay nada para operar. Sin esto, el panel solo dice "nada" y
+    deja al que mira sin saber si el problema es el mercado, la ventana o el
+    costo, que son tres cosas con tres soluciones distintas.
+    """
+    if not zonas:
+        return ("No salio ninguna zona en esta ventana con los filtros del bot. "
+                "Probá una ventana mas larga o una temporalidad mayor.")
+
+    anchas = [z for z in zonas if "demasiado ancha" in z["motivo_operable"]]
+    if anchas and all(z["plan"]["ensanchado"] for z in anchas):
+        veces = piso_pct / atr_pct if atr_pct else 0
+        return (
+            f"Ninguna zona cierra, y el motivo es el costo, no el grafico. "
+            f"Con {costo_pct:.2f}% de comision ida y vuelta el stop no puede "
+            f"bajar de {piso_pct:.2f}% del precio, y eso son {veces:.1f} ATR en "
+            f"{tf}: mas ancho que el tope de {stop_max_atr:.0f} ATR. Un stop tan "
+            f"grande con 1:3 manda el objetivo a varios dias de distancia, asi "
+            f"que ya no es una operacion de {tf}. Dos salidas reales: operar en "
+            f"futuros, donde la comision es la mitad, o subir de temporalidad "
+            f"para que el ATR crezca y el mismo porcentaje entre en el tope.")
+
+    if all(not z["vivo"] for z in zonas):
+        return ("Todas las zonas de la ventana ya fueron atravesadas. No queda "
+                "ningun nivel sin usar: esperar a que se forme uno nuevo.")
+
+    pasadas = [z for z in zonas if "se fue" in z["motivo_operable"]]
+    if pasadas:
+        return ("Las zonas vivas quedaron del lado equivocado del precio: con una "
+                "orden limite ya no se pueden tomar. Perseguirlas a mercado es "
+                "justo lo que la cuenta del costo no perdona.")
+
+    return ("Ninguna zona operable ahora. Mirá el motivo de cada una en la lista "
+            "de abajo.")
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 #  El analisis completo, en datos
 # ─────────────────────────────────────────────────────────────────────────────
@@ -542,18 +660,30 @@ def analizar(simbolo, tf="15m", dias=3.0, rr=3.0, costo_max_r=0.15,
     precio = precio_vivo(simbolo, usado) or ultimo_cierre
     atr_final = ind.atr(velas, cfg.atr_periodo)[-1] or 0.0
 
-    zonas = order_blocks(velas, cfg, desde) + fvgs(velas, desde)
-    for z in zonas:
+    tick = tick_de(simbolo, usado)
+    todas = order_blocks(velas, cfg, desde) + fvgs(velas, desde)
+    for z in todas:
         z["puntos"], z["motivos"] = puntaje(z, velas, precio)
-        z["plan"] = plan(z, atr_final, rr, costo_pct=costo_pct,
-                         costo_max_r=costo_max_r)
+        z["plan"] = ajustar_al_tick(
+            plan(z, atr_final, rr, costo_pct=costo_pct,
+                 costo_max_r=costo_max_r),
+            z["direccion"], tick, costo_pct)
         z["vivo"] = sigue_vivo(z, velas)
         z["operable"], z["motivo_operable"] = operable(z, precio, atr_final,
                                                        stop_max_atr)
-    zonas.sort(key=lambda z: z["puntos"], reverse=True)
-    zonas = zonas[:top]
+    todas.sort(key=lambda z: z["puntos"], reverse=True)
 
+    # Elegir y diagnosticar sobre TODAS, no sobre las que se muestran: si la
+    # unica zona operable quedaba en el puesto nueve, recortar primero la hacia
+    # desaparecer y el panel decia "nada para operar" teniendo un trade.
     ctx = contexto(simbolo, mayores, usado)
+    rec = recomendar(todas, precio, ctx, rr)
+
+    zonas = todas[:top]
+    if rec and rec["zona"] not in zonas:
+        zonas = [rec["zona"]] + zonas[:max(0, top - 1)]
+    piso_pct = costo_pct / costo_max_r if costo_max_r else 0.0
+    atr_pct = atr_final / precio * 100 if precio else 0.0
     return {
         "simbolo": simbolo, "tf": tf, "dias": dias, "rr": rr,
         "mercado": usado, "mercado_nombre": MERCADOS[usado]["nombre"],
@@ -561,17 +691,19 @@ def analizar(simbolo, tf="15m", dias=3.0, rr=3.0, costo_max_r=0.15,
         "respaldo": usado != mercado,
         "costo_pct": costo_pct, "costo_max_r": costo_max_r,
         "costo_forzado": costo_pct != MERCADOS[usado]["costo"],
-        "stop_max_atr": stop_max_atr,
-        "piso_stop_pct": costo_pct / costo_max_r if costo_max_r else 0.0,
+        "stop_max_atr": stop_max_atr, "tick": tick,
+        "piso_stop_pct": piso_pct,
         "precio": precio, "ultimo_cierre": ultimo_cierre,
-        "atr": atr_final,
-        "atr_pct": atr_final / precio * 100 if precio else 0.0,
+        "atr": atr_final, "atr_pct": atr_pct,
         "decimales": decimales(precio),
         "velas": len(velas), "en_ventana": en_ventana,
         "desde_ms": velas[desde].tiempo, "hasta_ms": velas[-1].tiempo,
         "contexto": ctx,
         "zonas": zonas,
-        "recomendacion": recomendar(zonas, precio, ctx, rr),
+        "recomendacion": rec,
+        "zonas_totales": len(todas),
+        "diagnostico": None if rec else diagnostico(
+            todas, costo_pct, piso_pct, stop_max_atr, atr_pct, tf),
         "_velas": velas,
     }
 
@@ -735,8 +867,17 @@ def main():
     print("\n" + "=" * 78)
     if not r:
         print("NINGUNA ZONA OPERABLE AHORA")
-        print("Todas estan atravesadas o el precio ya paso de largo la entrada.")
-        print("Con una orden limite no se puede tomar ninguna: esperar.")
+        print("=" * 78)
+        texto = a["diagnostico"] or ""
+        linea = ""
+        for palabra in texto.split():
+            if len(linea) + len(palabra) + 1 > 76:
+                print(linea)
+                linea = palabra
+            else:
+                linea = f"{linea} {palabra}".strip()
+        if linea:
+            print(linea)
     else:
         z, pl = r["zona"], r["zona"]["plan"]
         print(f"EL TRADE: {r['accion']}  {a['simbolo']}  {a['tf']}")
@@ -745,8 +886,11 @@ def main():
               f"a {r['distancia_pct']:.2f}% del precio)")
         print(f"  stop loss {pl['stop']:.{ancho}f}")
         print(f"  take prof {pl['objetivo']:.{ancho}f}")
-        print(f"  riesgo    {pl['riesgo_pct']:.2f}% del precio, a 1:{a['rr']:.0f}")
+        print(f"  riesgo    {pl['riesgo_pct']:.2f}% del precio, a "
+              f"1:{pl.get('rr_real', a['rr']):.2f}")
         print(f"  costo     {pl['costo_r']:.3f} R por operacion")
+        if a["tick"]:
+            print(f"  (precios ya redondeados al tick de {a['tick']:.10g})")
         print(f"  invalida  cierre de {a['tf']} pasando "
               f"{r['invalida']:.{ancho}f}")
         print(f"\n  acierto para empatar {r['acierto_empate']:.1f}%   "

@@ -687,6 +687,81 @@ apalancamiento no cambia el riesgo**, solo el margen que Binance retiene. Con
 x5 alcanza; ponerlo en x50 no te hace ganar más, solo te liquida antes de que
 el stop llegue a actuar.
 
+## La mesa: una pantalla, un botón, un trade
+
+```bash
+cd bot
+python mesa.py                                   # http://localhost:8778
+python mesa.py --simbolos CHZUSDT,SOLUSDT,ADAUSDT --tf 15m
+```
+
+Elegís el activo del cajón, la temporalidad, y apretás **CALCULAR**. En unos
+segundos baja las velas reales de Binance y devuelve la entrada como **orden
+límite**, el stop y el objetivo, con el contexto de H4 y H1 para saber si va a
+favor o contra la tendencia mayor.
+
+**No manda órdenes.** Calcula y te dice dónde poner los precios; las cargás vos.
+La separación es a propósito: mientras no haya una medición que diga que esto le
+gana al azar, que un botón pueda mandar una orden solo no es una comodidad, es
+una forma de perder plata rápido.
+
+Usa el mismo `zonas.analizar()` que la consola, así que la pantalla y
+`python zonas.py` no pueden decir cosas distintas. Eso importa más de lo que
+parece: si la pantalla calculara por su lado, tarde o temprano diría otro número
+y no habría forma de saber cuál de las dos tiene razón.
+
+### Las cuatro cosas que la pantalla no te deja hacer mal
+
+**El mercado decide el costo.** Futuros USDT-M paga 0.10% ida y vuelta, spot
+paga 0.20%. Elegís cuál en el cajón, y de ahí sale el piso del stop: 0.67% en
+futuros, 1.33% en spot. Si pedís futuros y Binance bloquea tu región (HTTP 451,
+pasa en media Europa), cae al espejo de spot y **te lo dice arriba en ámbar**,
+porque con el doble de comisión el piso se duplica y el trade puede dejar de
+cerrar. Mezclar las dos cosas —velas de spot con comisión de futuros— es un
+error silencioso: te da la mitad del piso que corresponde y ninguna señal.
+
+**Los precios salen redondeados al tick del par.** Un stop de `0.015639` en CHZ,
+cuyo tick es `0.00001`, lo rechaza el exchange: es un número lindo en pantalla y
+una orden que no entra. Y el redondeo va para el lado incómodo a propósito —el
+stop se separa de la entrada y el objetivo se acerca— así que el RR que ves puede
+decir **1:2.86** cuando pediste 1:3. Ese es el RR real. Redondear para el lado
+conveniente es como se fabrican backtests que no se repiten en vivo.
+
+**Solo ofrece entradas que se puedan poner.** Una zona de venta se toma con un
+límite *arriba* del precio y una de compra *abajo*. Si el precio ya pasó de
+largo, la orden nunca se llena: no es una entrada pendiente, es una que se fue.
+Esas quedan listadas pero apagadas, con el motivo escrito.
+
+**Le pone techo al stop en 3 × ATR.** Una zona muy ancha da un stop enorme, y con
+1:3 el objetivo se va tan lejos que deja de ser una operación de la temporalidad
+que pediste: es un swing de varios días disfrazado de entrada de 15 minutos.
+
+### Cuando no hay nada, dice por qué
+
+Ahí está la parte útil. Medido en SOLUSDT M15, en spot:
+
+> Ninguna zona cierra, y el motivo es el costo, no el gráfico. Con 0.20% de
+> comisión ida y vuelta el stop no puede bajar de 1.33% del precio, y eso son
+> 3.1 ATR en 15m: más ancho que el tope de 3 ATR. Dos salidas reales: operar en
+> futuros, donde la comisión es la mitad, o subir de temporalidad para que el ATR
+> crezca y el mismo porcentaje entre en el tope.
+
+El mismo activo, la misma ventana, en futuros sí da trade. Un panel que solo
+dijera «nada para operar» te deja sin saber si el problema es el mercado, la
+ventana o el costo, que son tres cosas con tres soluciones distintas.
+
+### El número que manda
+
+En la tarjeta dice **acierto para empatar**. Entrando al azar con el mismo stop
+se acierta 1/(1+RR) —25% a 1:3— y la esperanza bruta es exactamente cero. La
+comisión corre esa vara hacia arriba: `p = (1 + costo_en_R) / (1 + RR)`. En el
+CHZ de futuros son 28%.
+
+Así que lo que hay que superar son **3 puntos sobre 25**, no el 50% ni el 85%.
+Es una vara mucho más baja de lo que parece y mucho más honesta. Y hasta no tener
+30 operaciones anotadas ninguna racha significa nada: con 2 el margen de error es
+de 33 puntos.
+
 ## Marcar zonas en el gráfico: `zonas.py`
 
 Pedido concreto: «marcame en estos 3 días los Order Blocks más imponentes y
@@ -705,8 +780,11 @@ exactamente lo que analicé.
 ```bash
 python zonas.py BTCUSDT 1h --dias 3      # los 3 días que pediste
 python zonas.py ETHUSDT 4h --dias 10
-python zonas.py SOLUSDT 15m --dias 1 --top 3
+python zonas.py CHZUSDT 15m --dias 3 --mercado futuros
 ```
+
+Es la misma cosa que la pantalla, en consola: el mismo `analizar()`, los mismos
+filtros de costo y tick, el mismo trade elegido.
 
 Detecta los Order Blocks con **los mismos filtros que usa el bot** (reusa
 `estrategia._buscar_origen` y `estrategia._validar`), así que lo que se marca es
@@ -742,7 +820,8 @@ actualice solo, eso ya es `tradingview/order_blocks.pine`.
 | `scalper.py` | impulso e imbalance (FVG) con salida por tiempo, y el contador de confluencias |
 | `referencia.py` | **qué da entrar al azar**: el patrón que toda estrategia tiene que superar |
 | `panel.py` | panel web para el celular, con el botón de medir contra el azar |
-| `zonas.py` | analiza una ventana y escribe el Pine que marca esas zonas en tu gráfico |
+| `mesa.py` | **la pantalla**: elegís activo, apretás CALCULAR y salen entrada límite, SL y TP |
+| `zonas.py` | el análisis: detecta las zonas, elige el trade y escribe el Pine para dibujarlo |
 | `indicadores.py` | ATR, EMA, RSI, SuperTrend, pivotes y niveles diarios |
 | `binance_api.py` | cliente REST firmado (real o testnet) |
 | `probar.py` | simulación de un activo sobre historia real, con comisiones |
