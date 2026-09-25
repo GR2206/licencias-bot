@@ -1,8 +1,13 @@
 """Analiza una ventana de tiempo y escribe el Pine que la marca en tu grafico.
 
     python zonas.py BTCUSDT 1h --dias 3
-    python zonas.py XAUUSD 1h --dias 3 --fuente tradingview
     python zonas.py ADAUSDT 4h --dias 10 --salida /tmp/mis_zonas.pine
+    python zonas.py SOLUSDT 15m --dias 1 --top 3
+
+Los precios salen del espejo publico de Binance, asi que por ahora esto anda con
+cripto y nada mas. Para oro, forex o acciones hace falta una fuente de velas que
+todavia no tengo: Yahoo devuelve el forex redondeado al pip y Dukascopy tarda
+demasiado. Es justo el agujero que taparia conectar el MCP de TradingView.
 
 Resuelve un problema concreto: yo puedo LEER precios y calcular donde estan las
 zonas, pero no puedo DIBUJAR en tu grafico de TradingView. El MCP oficial de
