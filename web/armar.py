@@ -26,7 +26,8 @@ html = html.replace(
 )
 html = html.replace(
     "<main>",
-    '<main>\n  <div id="motor" class="estado">Cargando la mesa en Chrome…</div>',
+    "<main>\n  <div id=\"motor\" class=\"estado\"><div class=\"giro\"></div>\n"
+    "    <div class=\"pasando\">Cargando la mesa…</div></div>",
     1,
 )
 import json

@@ -91,11 +91,21 @@ function restaurarBitacora() {
 
 let cola = Promise.resolve();
 
+function dejarPintar() {
+  return new Promise((resolver) => {
+    let hecho = false;
+    const fin = () => { if (!hecho) { hecho = true; resolver(); } };
+    requestAnimationFrame(() => requestAnimationFrame(fin));
+    setTimeout(fin, 50);
+  });
+}
+
 window.fetch = function (input, init) {
   const url = typeof input === "string" ? input : (input && input.url) || "";
   if (!String(url).includes("api/")) return origFetch(input, init);
   const job = cola.then(async () => {
     await listo;
+    await dejarPintar();
     restaurarBitacora();
     const atender = pyodide.globals.get("atender_web");
     let bruto = atender(String(url));

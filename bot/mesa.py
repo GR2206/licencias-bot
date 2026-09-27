@@ -49,7 +49,7 @@ POR_DEFECTO = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
 TFS = ["5m", "15m", "30m", "1h", "4h"]
 # El numero que se ve abajo de la pagina. Si no dice este, el archivo del
 # celular es viejo. Se sube junto con zonas.VERSION.
-VERSION = 18
+VERSION = 19
 
 # Cuantas velas se deja puesta la orden limite. En 15m son 6 horas. Pasado
 # eso, si el precio no toco la entrada, el trade vencio: no es una perdida,
@@ -647,7 +647,10 @@ async function calcular() {
   const b = $("#calcular"), t = $("#buscar");
   b.disabled = true; t.disabled = true; b.textContent = "CALCULANDO…";
   $("#salida").innerHTML =
-    `<div class="estado">bajando velas de Binance y buscando zonas…</div>`;
+    `<div class="estado"><div class="giro"></div>
+      <div class="pasando">${esc($("#simbolo").value)}</div>
+      <div class="zDet">bajando velas y buscando la zona…</div>
+    </div>`;
   const p = new URLSearchParams({
     simbolo: $("#simbolo").value, tf: $("#tf").value,
     dias: $("#dias").value, rr: $("#rr").value,
