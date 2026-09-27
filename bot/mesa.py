@@ -25,8 +25,6 @@ import csv
 import io
 import json
 import os
-import shutil
-import subprocess
 import sys
 import threading
 import time
@@ -51,7 +49,7 @@ POR_DEFECTO = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
 TFS = ["5m", "15m", "30m", "1h", "4h"]
 # El numero que se ve abajo de la pagina. Si no dice este, el archivo del
 # celular es viejo. Se sube junto con zonas.VERSION.
-VERSION = 15
+VERSION = 16
 
 # Cuantas velas se deja puesta la orden limite. En 15m son 6 horas. Pasado
 # eso, si el precio no toco la entrada, el trade vencio: no es una perdida,
@@ -326,146 +324,6 @@ def mirar(simbolo, tf, dias, rr, mercado, costo_max_r):
         "accion": r["accion"],
         "lado": "LONG" if r["zona"]["direccion"] == 1 else "SHORT",
     }
-
-
-# La busqueda completa corre en este proceso, no en la pagina. Si el celular
-# se bloquea, el navegador congela el JavaScript y el recorrido se moria a
-# mitad. El hilo sigue, y al terminar termux-notification avisa en la cortina.
-_busqueda = {
-    "id": 0,
-    "activa": False,
-    "terminada": False,
-    "tf": "",
-    "total": 0,
-    "hechos": 0,
-    "actual": "",
-    "encontrados": [],
-    "error": "",
-    "aviso": "",
-    "notificado": False,
-}
-_candado_busqueda = threading.Lock()
-
-
-def _termux(args):
-    """Comando de Termux:API. Si la app no esta instalada, no hace nada."""
-    if not shutil.which(args[0]):
-        return False
-    try:
-        hecho = subprocess.run(
-            args, check=False, timeout=8,
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-    return hecho.returncode == 0
-
-
-def _avisar(texto):
-    return _termux([
-        "termux-notification",
-        "--id", "mesa-buscar",
-        "--title", "Mesa",
-        "--content", texto[:400],
-        "--priority", "high",
-        "--sound",
-        "--vibrate", "300,120,300",
-    ])
-
-
-def _estado_busqueda():
-    with _candado_busqueda:
-        datos = dict(_busqueda)
-        datos["encontrados"] = list(_busqueda["encontrados"])
-        return datos
-
-
-def _texto_aviso(tf, total, encontrados, fallos):
-    if encontrados:
-        nombres = ", ".join(f"{t['simbolo']} {t['lado']}" for t in encontrados)
-        return f"Encontré {len(encontrados)} en {tf}: {nombres}"
-    if fallos and len(fallos) >= total:
-        return f"No pude revisar los pares en {tf}."
-    return f"Revisé {total} pares en {tf}. No encontré ningún trade."
-
-
-def iniciar_busqueda(simbolos, tf, dias, rr, mercado, costo_max_r):
-    """Arranca el recorrido y devuelve el estado. Si ya hay uno, no lo pisa."""
-    with _candado_busqueda:
-        if _busqueda["activa"]:
-            datos = dict(_busqueda)
-            datos["encontrados"] = list(_busqueda["encontrados"])
-            return datos
-        _busqueda["id"] += 1
-        _busqueda.update({
-            "activa": True,
-            "terminada": False,
-            "tf": tf,
-            "total": len(simbolos),
-            "hechos": 0,
-            "actual": "",
-            "encontrados": [],
-            "error": "",
-            "aviso": "",
-            "notificado": False,
-        })
-    threading.Thread(
-        target=_recorrer,
-        args=(list(simbolos), tf, dias, rr, mercado, costo_max_r),
-        daemon=True,
-    ).start()
-    return _estado_busqueda()
-
-
-def _recorrer(simbolos, tf, dias, rr, mercado, costo_max_r):
-    tome_bloqueo = _termux(["termux-wake-lock"])
-    aviso = f"La búsqueda en {tf} se cortó."
-    error = ""
-    encontrados = []
-    notificado = False
-    try:
-        _termux([
-            "termux-notification",
-            "--id", "mesa-buscar",
-            "--title", "Mesa",
-            "--content", f"Buscando trades en {tf}…",
-            "--ongoing",
-        ])
-        fallos = []
-        for i, simbolo in enumerate(simbolos):
-            with _candado_busqueda:
-                _busqueda["actual"] = simbolo
-                _busqueda["hechos"] = i
-            try:
-                visto = mirar(simbolo, tf, dias, rr, mercado, costo_max_r)
-            except Exception:
-                fallos.append(simbolo)
-                visto = None
-            if visto and visto.get("lado"):
-                encontrados.append({
-                    "simbolo": visto["simbolo"],
-                    "lado": visto["lado"],
-                    "accion": visto.get("accion") or "",
-                })
-            with _candado_busqueda:
-                _busqueda["encontrados"] = list(encontrados)
-                _busqueda["hechos"] = i + 1
-        aviso = _texto_aviso(tf, len(simbolos), encontrados, fallos)
-        error = aviso if fallos and len(fallos) >= len(simbolos) else ""
-        notificado = _avisar(aviso)
-    except Exception as e:
-        error = str(e)
-        notificado = _avisar(aviso)
-    finally:
-        with _candado_busqueda:
-            _busqueda["activa"] = False
-            _busqueda["terminada"] = True
-            _busqueda["actual"] = ""
-            _busqueda["encontrados"] = list(encontrados)
-            _busqueda["error"] = error
-            _busqueda["aviso"] = aviso
-            _busqueda["notificado"] = notificado
-        if tome_bloqueo:
-            _termux(["termux-wake-unlock"])
 
 
 def calcular(simbolo, tf, dias, rr, mercado, costo_max_r):
@@ -783,7 +641,6 @@ async function inicio() {
   if (q.get("simbolo")) $("#simbolo").value = q.get("simbolo").toUpperCase();
   if (q.get("tf")) $("#tf").value = q.get("tf");
   if (q.get("calcular") !== null) calcular();
-  seguirBusqueda();
 }
 
 async function calcular() {
@@ -828,86 +685,45 @@ function engancharFilas() {
   });
 }
 
-let busquedaVista = 0;
-let sondeo = null;
-let sondeoGen = 0;
-
-function pintarBusqueda(d) {
-  const b = $("#buscar"), c = $("#calcular");
-  if (d.activa) {
-    b.disabled = true; c.disabled = true;
-    b.textContent = "REVISANDO…";
-    const n = Math.min(d.total, (d.hechos || 0) + 1);
-    $("#lista").innerHTML =
-      `<div class="estado"><div class="giro"></div>
-        <div class="pasando">${esc(d.actual || "…")}</div>
-        <div class="zDet">${n} / ${d.total} · ${esc(d.tf)}</div>
-        <div class="zDet">Si se bloquea el celular, sigue y avisa al terminar.</div>
-      </div>` + filasHtml(d.encontrados || []);
-    engancharFilas();
-    return;
-  }
-  if (!d.terminada) return;
-  b.disabled = false; c.disabled = false; b.textContent = "CALCULAR TODO";
-  if (d.id === busquedaVista) return;
-  busquedaVista = d.id;
-  const filas = d.encontrados || [];
-  if (filas.length) {
-    $("#lista").innerHTML = filasHtml(filas);
-    engancharFilas();
-  } else {
-    const cls = d.error ? "panel nota nRojo" : "nota nGris";
-    $("#lista").innerHTML =
-      `<div class="${cls}" style="margin-top:12px">${esc(d.aviso || d.error)}</div>`;
-  }
-  if (!d.notificado && d.aviso && "Notification" in window
-      && Notification.permission === "granted") {
-    try { new Notification("Mesa", {body: d.aviso, tag: "mesa-buscar"}); }
-    catch (e) {}
-  }
-}
-
-function seguirBusqueda() {
-  const gen = ++sondeoGen;
-  if (sondeo) clearInterval(sondeo);
-  const tick = async () => {
-    if (gen !== sondeoGen) return;
-    try {
-      const d = await (await fetch("api/buscar-estado")).json();
-      if (gen !== sondeoGen) return;
-      pintarBusqueda(d);
-      if (!d.activa) {
-        clearInterval(sondeo);
-        sondeo = null;
-      }
-    } catch (e) {}
-  };
-  sondeo = setInterval(tick, 800);
-  tick();
-}
-
 async function buscar() {
-  if ("Notification" in window && Notification.permission === "default") {
-    try { await Notification.requestPermission(); } catch (e) {}
-  }
   const b = $("#buscar"), c = $("#calcular");
+  const tf = $("#tf").value;
+  const simbolos = CFG.simbolos || [];
+  const encontrados = [];
   b.disabled = true; c.disabled = true;
   b.textContent = "REVISANDO…";
-  const p = new URLSearchParams({
-    tf: $("#tf").value,
-    dias: $("#dias").value, rr: $("#rr").value,
-    mercado: $("#mercado").value,
-  });
   try {
-    const d = await (await fetch("api/buscar-todo?" + p)).json();
-    if (d.error && !d.activa && !d.terminada) throw new Error(d.error);
-    pintarBusqueda(d);
-    seguirBusqueda();
+    for (let i = 0; i < simbolos.length; i++) {
+      const s = simbolos[i];
+      $("#lista").innerHTML =
+        `<div class="estado"><div class="giro"></div>
+          <div class="pasando">${esc(s)}</div>
+          <div class="zDet">${i + 1} / ${simbolos.length} · ${esc(tf)}</div>
+        </div>` + filasHtml(encontrados);
+      engancharFilas();
+      const p = new URLSearchParams({
+        simbolo: s, tf,
+        dias: $("#dias").value, rr: $("#rr").value,
+        mercado: $("#mercado").value,
+      });
+      const d = await (await fetch("api/buscar?" + p)).json();
+      if (d.error) throw new Error(d.error);
+      if (d.lado) encontrados.push(d);
+    }
+    if (encontrados.length) {
+      $("#lista").innerHTML = filasHtml(encontrados);
+      engancharFilas();
+    } else {
+      $("#lista").innerHTML =
+        `<div class="nota nGris" style="margin-top:12px">Revisé ${simbolos.length} pares en ${esc(tf)}. No encontré ningún trade.</div>`;
+    }
   } catch (e) {
     $("#lista").innerHTML =
-      `<div class="panel nota nRojo">no pude revisar: ${esc(e.message)}</div>`;
-    b.disabled = false; c.disabled = false; b.textContent = "CALCULAR TODO";
+      `<div class="panel nota nRojo">no pude revisar: ${esc(e.message)}</div>`
+      + filasHtml(encontrados);
+    engancharFilas();
   }
+  b.disabled = false; c.disabled = false; b.textContent = "CALCULAR TODO";
 }
 
 function pintar(d) {
@@ -1109,9 +925,6 @@ async function cargarBitacora(actualizar) {
 
 $("#calcular").addEventListener("click", calcular);
 $("#buscar").addEventListener("click", buscar);
-document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "visible") seguirBusqueda();
-});
 $("#actualizarBit").addEventListener("click", () => cargarBitacora(true));
 inicio();
 cargarBitacora(false);
@@ -1201,23 +1014,6 @@ class Manejador(BaseHTTPRequestHandler):
                                      self.costo_max_r))
                 except RuntimeError as e:
                     self._json({"error": str(e)}, 502)
-            elif ruta == "/api/buscar-todo":
-                tf = uno("tf", self.tf_def)
-                if tf not in zonas.MINUTOS:
-                    self._json({"error": f"temporalidad {tf} desconocida"}, 400)
-                    return
-                mercado = uno("mercado", "futuros")
-                if mercado not in zonas.MERCADOS:
-                    mercado = "futuros"
-                try:
-                    dias = max(1.0, min(30.0, float(uno("dias", "3"))))
-                    rr = max(1.0, min(10.0, float(uno("rr", "3"))))
-                except ValueError:
-                    dias, rr = 3.0, 3.0
-                self._json(iniciar_busqueda(
-                    self.simbolos, tf, dias, rr, mercado, self.costo_max_r))
-            elif ruta == "/api/buscar-estado":
-                self._json(_estado_busqueda())
             elif ruta == "/api/bitacora":
                 if uno("actualizar") == "1":
                     self._json(actualizar_bitacora())
