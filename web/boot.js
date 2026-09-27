@@ -8,11 +8,11 @@ const listo = (async () => {
       indexURL: "https://cdn.jsdelivr.net/pyodide/v0.27.7/full/",
     });
     pyodide.FS.mkdirTree("/app");
+    const archivos = globalThis.ARCHIVOS_MESA || {};
     for (const nombre of ["indicadores.py", "estrategia.py", "zonas.py", "mesa.py"]) {
-      const url = new URL("../bot/" + nombre, location.href);
-      const respuesta = await origFetch(url);
-      if (!respuesta.ok) throw new Error("no pude leer " + nombre);
-      pyodide.FS.writeFile("/app/" + nombre, await respuesta.text());
+      const texto = archivos[nombre];
+      if (!texto) throw new Error("falta " + nombre);
+      pyodide.FS.writeFile("/app/" + nombre, texto);
     }
     const guardada = localStorage.getItem("mesa-bitacora");
     if (guardada != null) pyodide.FS.writeFile("/bitacora.json", guardada);

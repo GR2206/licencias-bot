@@ -29,7 +29,17 @@ html = html.replace(
     '<main>\n  <div id="motor" class="estado">Cargando la mesa en Chrome…</div>',
     1,
 )
+import json
+
+archivos = {
+    nombre: (RAIZ / "bot" / nombre).read_text(encoding="utf-8")
+    for nombre in ("indicadores.py", "estrategia.py", "zonas.py", "mesa.py")
+}
 boot = (RAIZ / "web" / "boot.js").read_text(encoding="utf-8")
+# El HTML corta el script en cuanto ve </script>, aunque esté dentro de un
+# string. Las fuentes de Python traen esa marca porque la página vive ahí.
+carga = json.dumps(archivos, ensure_ascii=False).replace("<", "\\u003c")
+boot = "globalThis.ARCHIVOS_MESA = " + carga + ";\n" + boot
 html = html.replace("<script>\n", "<script>\n" + boot + "\n", 1)
 destino = RAIZ / "web" / "index.html"
 destino.write_text(html, encoding="utf-8")
