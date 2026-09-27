@@ -28,7 +28,6 @@ import os
 import sys
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
@@ -50,11 +49,7 @@ POR_DEFECTO = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
 TFS = ["5m", "15m", "30m", "1h", "4h"]
 # El numero que se ve abajo de la pagina. Si no dice este, el archivo del
 # celular es viejo. Se sube junto con zonas.VERSION.
-VERSION = 11
-
-# La revision de "calcular todo" mira H1: ahi la tendencia es mas estable que
-# en 15m. El 15m queda para la entrada, cuando se calcula un activo solo.
-TF_REVISION = "1h"
+VERSION = 12
 
 # Cuantas velas se deja puesta la orden limite. En 15m son 6 horas. Pasado
 # eso, si el precio no toco la entrada, el trade vencio: no es una perdida,
@@ -318,38 +313,17 @@ def bitacora_csv(filas):
     return buffer.getvalue()
 
 
-def buscar_trades(simbolos, dias, rr, mercado, costo_max_r):
-    """Pares con trade en H1, sin precios ni texto. No anota la bitacora.
-
-    El detalle, el stop y el objetivo salen despues, cuando se calcula ese
-    activo solo. Recien ahi entra al historial.
-    """
-    def uno(simbolo):
-        a = zonas.analizar(simbolo, TF_REVISION, dias, rr, costo_max_r, mercado)
-        r = a.get("recomendacion")
-        if not r:
-            return None
-        return {
-            "simbolo": a["simbolo"],
-            "accion": r["accion"],
-            "lado": "LONG" if r["zona"]["direccion"] == 1 else "SHORT",
-        }
-
-    trades, fallos = [], 0
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        futuros = [pool.submit(uno, s) for s in simbolos]
-        for futuro in futuros:
-            try:
-                fila = futuro.result()
-            except RuntimeError:
-                fallos += 1
-                continue
-            if fila:
-                trades.append(fila)
-    orden = {s: i for i, s in enumerate(simbolos)}
-    trades.sort(key=lambda f: orden.get(f["simbolo"], 0))
-    return {"tf": TF_REVISION, "trades": trades,
-            "revisados": len(simbolos), "fallos": fallos}
+def mirar(simbolo, tf, dias, rr, mercado, costo_max_r):
+    """Si ese par tiene trade en la temporalidad pedida. No anota la bitacora."""
+    a = zonas.analizar(simbolo, tf, dias, rr, costo_max_r, mercado)
+    r = a.get("recomendacion")
+    if not r:
+        return {"simbolo": a["simbolo"], "lado": None}
+    return {
+        "simbolo": a["simbolo"],
+        "accion": r["accion"],
+        "lado": "LONG" if r["zona"]["direccion"] == 1 else "SHORT",
+    }
 
 
 def calcular(simbolo, tf, dias, rr, mercado, costo_max_r):
@@ -513,6 +487,8 @@ PAGINA = """<!DOCTYPE html>
   .filaTrade:active { background:#21262d; }
   .ladoL { color:var(--verde); font-weight:700; }
   .ladoS { color:var(--rojo); font-weight:700; }
+  .pasando { font-size:18px; font-weight:700; letter-spacing:.4px;
+             color:var(--texto); }
   .estado { text-align:center; color:var(--suave); font-size:13px; padding:18px; }
   .trade { border-radius:12px; padding:0; overflow:hidden; margin-bottom:12px;
            border:1px solid var(--borde); }
@@ -694,43 +670,52 @@ function elegir(simbolo) {
   sel.scrollIntoView({block: "center"});
 }
 
+function filasHtml(filas) {
+  return filas.map(t =>
+    `<button type="button" class="filaTrade" data-sim="${esc(t.simbolo)}">
+      <span>${esc(t.simbolo)}</span>
+      <span class="${t.lado === "LONG" ? "ladoL" : "ladoS"}">${esc(t.lado)}</span>
+    </button>`).join("");
+}
+
+function engancharFilas() {
+  $("#lista").querySelectorAll(".filaTrade").forEach(el => {
+    el.addEventListener("click", () => elegir(el.dataset.sim));
+  });
+}
+
 async function buscar() {
   const b = $("#buscar"), c = $("#calcular");
+  const tf = $("#tf").value;
+  const simbolos = CFG.simbolos || [];
+  const encontrados = [];
   b.disabled = true; c.disabled = true;
-  b.textContent = "REVISANDO H1…";
-  $("#lista").innerHTML =
-    `<div class="estado"><div class="giro"></div>revisando H1</div>`;
-  const p = new URLSearchParams({
-    dias: $("#dias").value, rr: $("#rr").value,
-    mercado: $("#mercado").value,
-  });
+  b.textContent = "REVISANDO…";
   try {
-    const d = await (await fetch("api/buscar?" + p)).json();
-    if (d.error) {
+    for (let i = 0; i < simbolos.length; i++) {
+      const s = simbolos[i];
       $("#lista").innerHTML =
-        `<div class="panel nota nRojo">${esc(d.error)}</div>`;
-    } else {
-      const filas = d.trades || [];
-      let h = `<div class="zDet" style="margin-top:12px">H1 · ${filas.length} con trade</div>`;
-      if (!filas.length) {
-        h += `<div class="estado">${d.fallos ? "no pude leer los pares" : "en H1 no hay trade"}</div>`;
-      } else {
-        h += filas.map(t =>
-          `<button type="button" class="filaTrade" data-sim="${esc(t.simbolo)}">
-            <span>${esc(t.simbolo)}</span>
-            <span class="${t.lado === "LONG" ? "ladoL" : "ladoS"}">${esc(t.lado)}</span>
-          </button>`).join("");
-      }
-      h += `<div class="zDet" style="margin-top:8px">Elegí uno y apretá CALCULAR
-        en 15m para la entrada. Recién ahí entra a la bitácora.</div>`;
-      $("#lista").innerHTML = h;
-      $("#lista").querySelectorAll(".filaTrade").forEach(el => {
-        el.addEventListener("click", () => elegir(el.dataset.sim));
+        `<div class="estado"><div class="giro"></div>
+          <div class="pasando">${esc(s)}</div>
+          <div class="zDet">${i + 1} / ${simbolos.length} · ${esc(tf)}</div>
+        </div>` + filasHtml(encontrados);
+      engancharFilas();
+      const p = new URLSearchParams({
+        simbolo: s, tf,
+        dias: $("#dias").value, rr: $("#rr").value,
+        mercado: $("#mercado").value,
       });
+      const d = await (await fetch("api/buscar?" + p)).json();
+      if (d.error) throw new Error(d.error);
+      if (d.lado) encontrados.push(d);
     }
+    $("#lista").innerHTML = filasHtml(encontrados);
+    engancharFilas();
   } catch (e) {
     $("#lista").innerHTML =
-      `<div class="panel nota nRojo">no pude revisar: ${esc(e.message)}</div>`;
+      `<div class="panel nota nRojo">no pude revisar: ${esc(e.message)}</div>`
+      + filasHtml(encontrados);
+    engancharFilas();
   }
   b.disabled = false; c.disabled = false; b.textContent = "CALCULAR TODO";
 }
@@ -999,6 +984,14 @@ class Manejador(BaseHTTPRequestHandler):
                 except RuntimeError as e:
                     self._json({"error": str(e)}, 502)
             elif ruta == "/api/buscar":
+                simbolo = uno("simbolo").upper()
+                if not simbolo.isalnum():
+                    self._json({"error": "simbolo invalido"}, 400)
+                    return
+                tf = uno("tf", self.tf_def)
+                if tf not in zonas.MINUTOS:
+                    self._json({"error": f"temporalidad {tf} desconocida"}, 400)
+                    return
                 mercado = uno("mercado", "futuros")
                 if mercado not in zonas.MERCADOS:
                     mercado = "futuros"
@@ -1007,8 +1000,11 @@ class Manejador(BaseHTTPRequestHandler):
                     rr = max(1.0, min(10.0, float(uno("rr", "3"))))
                 except ValueError:
                     dias, rr = 3.0, 3.0
-                self._json(buscar_trades(self.simbolos, dias, rr, mercado,
-                                         self.costo_max_r))
+                try:
+                    self._json(mirar(simbolo, tf, dias, rr, mercado,
+                                     self.costo_max_r))
+                except RuntimeError as e:
+                    self._json({"error": str(e)}, 502)
             elif ruta == "/api/bitacora":
                 if uno("actualizar") == "1":
                     self._json(actualizar_bitacora())
