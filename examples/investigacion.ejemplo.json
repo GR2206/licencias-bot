@@ -1,0 +1,32 @@
+{
+  "slug": "REEMPLAZAR-CON-SLUG-REAL",
+  "resolution_line": "El primer outcome paga solo si ocurre exactamente lo que dice la regla del mercado, sin interpretarla a favor.",
+  "resolution_clear": true,
+  "probability": 0.55,
+  "confidence": "baja",
+  "reasons_for": [
+    "Hay un dato fechado que el precio todavía no incorpora del todo.",
+    "La regla de resolución es concreta y se puede verificar en una fuente primaria."
+  ],
+  "reasons_against": [
+    "Quien está vendiendo puede tener el dato más fresco o leer mejor la regla.",
+    "El movimiento puede ser liquidez, no una mala probabilidad."
+  ],
+  "counterparty_hypothesis": "La otra punta paga este precio porque descuenta un escenario que yo no tengo documentado.",
+  "sources": [
+    {
+      "title": "Fuente primaria de ejemplo",
+      "url": "https://example.com/fuente-primaria",
+      "date": "2026-09-26",
+      "kind": "primaria"
+    },
+    {
+      "title": "Medio de ejemplo",
+      "url": "https://example.org/cobertura",
+      "date": "2026-09-26",
+      "kind": "medio"
+    }
+  ],
+  "fast_market": false,
+  "reviewed_large_divergence": false
+}
