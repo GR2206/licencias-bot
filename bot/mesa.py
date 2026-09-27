@@ -49,7 +49,7 @@ POR_DEFECTO = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
 TFS = ["5m", "15m", "30m", "1h", "4h"]
 # El numero que se ve abajo de la pagina. Si no dice este, el archivo del
 # celular es viejo. Se sube junto con zonas.VERSION.
-VERSION = 12
+VERSION = 13
 
 # Cuantas velas se deja puesta la orden limite. En 15m son 6 horas. Pasado
 # eso, si el precio no toco la entrada, el trade vencio: no es una perdida,
@@ -414,6 +414,7 @@ def _para_web(a):
             "nacio_ms": z["tiempo"],
             "confluencia": z.get("confluencia") or [],
             "vwap_afino": bool(p.get("vwap_afino")),
+            "gatillo": r.get("gatillo") or "",
         }
 
     return {
@@ -765,7 +766,10 @@ function pintar(d) {
         queda ahí y el stop sigue en el borde de la idea.</div>`;
     }
 
-    if (r.confluencia && r.confluencia.length) {
+    if (r.gatillo) {
+      h += `<div class="nota nGris"><b>${esc(r.gatillo)}.</b>
+        La entrada es el límite en esa media.</div>`;
+    } else if (r.confluencia && r.confluencia.length) {
       h += `<div class="nota nGris"><b>Los tres puntos coinciden.</b>
         ${esc(r.confluencia.join(" · "))}. El ${esc(r.lado)} se activa cuando
         el precio toca la entrada.</div>`;

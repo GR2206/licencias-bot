@@ -44,6 +44,9 @@ Lo que marca:
   * VWAP: si la zona queda entera del lado equivocado del valor del dia, no
     se opera. Si el VWAP cae en la mitad cercana de la caja, la entrada se
     mueve ahi y el stop de la zona no se toca.
+  * GATILLO EN LA MEDIA: martillo seguido de envolvente sobre MA 25, 99 o 200,
+    o tres soldados / tres cuervos en 5m y 15m sobre esas medias. La entrada
+    es la media. La MA 7 se ve en el grafico y no activa sola.
 
 Y las ordena por que tan imponentes son, con un puntaje explicado, para que no
 haya que mirar veinte cajas iguales. El puntaje ordena la mirada y nada mas: los
@@ -584,7 +587,12 @@ DISTANCIA_MAX_ATR = 1.5
 # Si el precio ya recorrio esta fraccion del objetivo 1:3 despues de nacer la
 # zona, el premio se negoceo sin la entrada. Volver ahi es entrar tarde.
 RECORRIDO_AGOTADO = 0.8
-VERSION = 10
+# Las MA del grafico de Binance. La 7 es la rapida: el precio la roza todo el
+# tiempo, asi que no activa un trade. 25, 99 y 200 si, cuando ademas hay vela
+# gatillo.
+MEDIAS = (7, 25, 99, 200)
+MEDIAS_GATILLO = (25, 99, 200)
+VERSION = 13
 
 
 def premio_por_delante(zona, precio):
@@ -839,6 +847,182 @@ def recomendar(zonas, precio, ctx, rr):
     }
 
 
+def _martillo(v, alcista):
+    """Martillo alcista o estrella fugaz. Misma vara que la linea gris."""
+    rango = v.maximo - v.minimo
+    if rango <= 0:
+        return False
+    cuerpo = abs(v.cierre - v.apertura)
+    techo = max(v.apertura, v.cierre)
+    piso = min(v.apertura, v.cierre)
+    mecha = piso - v.minimo if alcista else v.maximo - techo
+    contra = v.maximo - techo if alcista else piso - v.minimo
+    if mecha < rango * 0.60 or contra > rango * 0.20:
+        return False
+    if cuerpo <= 0 or mecha < cuerpo * 3:
+        return False
+    if alcista and v.cierre < v.apertura:
+        return False
+    if not alcista and v.cierre > v.apertura:
+        return False
+    return True
+
+
+def _envolvente(prev, v, alcista):
+    """El cuerpo de v tapa entero el cuerpo de la vela anterior, a favor."""
+    if alcista and v.cierre <= v.apertura:
+        return False
+    if not alcista and v.cierre >= v.apertura:
+        return False
+    piso_p = min(prev.apertura, prev.cierre)
+    techo_p = max(prev.apertura, prev.cierre)
+    if techo_p <= piso_p:
+        return False
+    return (min(v.apertura, v.cierre) <= piso_p
+            and max(v.apertura, v.cierre) >= techo_p)
+
+
+def _soldados(a, b, c, alcista):
+    """Tres soldados blancos o tres cuervos. Cuerpos grandes, sin mecha en contra."""
+    trio = (a, b, c)
+    if alcista:
+        if not all(v.cierre > v.apertura for v in trio):
+            return False
+        if not (b.cierre > a.cierre and c.cierre > b.cierre):
+            return False
+    else:
+        if not all(v.cierre < v.apertura for v in trio):
+            return False
+        if not (b.cierre < a.cierre and c.cierre < b.cierre):
+            return False
+    for prev, v in ((a, b), (b, c)):
+        piso = min(prev.apertura, prev.cierre)
+        techo = max(prev.apertura, prev.cierre)
+        if not (piso <= v.apertura <= techo):
+            return False
+    for v in trio:
+        rango = v.maximo - v.minimo
+        if rango <= 0:
+            return False
+        if abs(v.cierre - v.apertura) < rango * 0.50:
+            return False
+        mecha = ((min(v.apertura, v.cierre) - v.minimo) if alcista
+                 else (v.maximo - max(v.apertura, v.cierre)))
+        if mecha > rango * 0.25:
+            return False
+    return True
+
+
+def _media_en_vela(vela, medias):
+    """La media mas lenta que la vela toca o atraviesa. medias: (periodo, valor)."""
+    tocadas = [par for par in medias
+               if par[1] is not None and vela.minimo <= par[1] <= vela.maximo]
+    if not tocadas:
+        return None
+    return max(tocadas)
+
+
+def proponer_gatillo(velas, precio, atr, tf, ctx, rr, costo_pct, costo_max_r,
+                     tick, stop_max_atr=3.0):
+    """Vela gatillo sobre MA 25, 99 o 200. La entrada queda en esa media.
+
+    Alta confianza, y nada mas que eso: martillo y envolvente en la vela que
+    acaba de cerrar, o tres soldados / tres cuervos en 5m y 15m. Si 4h o 1h
+    van para el otro lado, no activa.
+    """
+    if len(velas) < 210 or not atr or not precio:
+        return None
+    mayores = [c for c in ctx if "signo" in c]
+    if not mayores:
+        return None
+
+    cierres = [v.cierre for v in velas]
+    series = {p: ind.sma(cierres, p) for p in MEDIAS_GATILLO}
+    candidatos = []
+
+    martillo, confirma = velas[-2], velas[-1]
+    for alcista in (True, False):
+        if _martillo(martillo, alcista) and _envolvente(martillo, confirma, alcista):
+            medias = [(p, series[p][-2]) for p in MEDIAS_GATILLO]
+            nivel = _media_en_vela(martillo, medias)
+            if nivel and ((alcista and martillo.cierre >= nivel[1])
+                          or (not alcista and martillo.cierre <= nivel[1])):
+                candidatos.append((0, nivel[0], 1 if alcista else -1, nivel[1],
+                                   martillo.minimo if alcista else martillo.maximo,
+                                   "martillo y envolvente"))
+        if tf in ("5m", "15m") and _soldados(velas[-3], velas[-2], velas[-1], alcista):
+            nivel = None
+            for k in (-3, -2, -1):
+                medias = [(p, series[p][k]) for p in MEDIAS_GATILLO]
+                toca = _media_en_vela(velas[k], medias)
+                if toca and (nivel is None or toca[0] > nivel[0]):
+                    nivel = toca
+            if nivel:
+                nombre = "tres soldados" if alcista else "tres cuervos"
+                extremo = (min(v.minimo for v in velas[-3:]) if alcista
+                           else max(v.maximo for v in velas[-3:]))
+                candidatos.append((1, nivel[0], 1 if alcista else -1, nivel[1],
+                                   extremo, nombre))
+
+    candidatos.sort(key=lambda c: (c[0], -c[1]))
+    for _, periodo, direccion, nivel, extremo, nombre in candidatos:
+        contra = [c["tf"] for c in mayores
+                  if c.get("signo") and c["signo"] != direccion]
+        if contra:
+            continue
+        if direccion == 1:
+            if not (extremo < nivel):
+                continue
+            zona_top, zona_bot = nivel, extremo
+        else:
+            if not (extremo > nivel):
+                continue
+            zona_top, zona_bot = extremo, nivel
+        favor = [c["tf"] for c in mayores if c.get("signo") == direccion]
+        texto = f"{nombre} en MA{periodo}"
+        zona = {
+            "tipo": nombre,
+            "direccion": direccion,
+            "top": zona_top, "bot": zona_bot,
+            "indice_origen": len(velas) - 2,
+            "indice_ruptura": len(velas) - 1,
+            "tiempo": velas[-1].tiempo,
+            "empuje_atr": 0, "hueco_vivo": False,
+            "puntos": 6,
+            "motivos": [texto],
+            "gatillo": texto,
+            "confluencia": [texto],
+            "falta_confluencia": [],
+        }
+        zona["plan"] = ajustar_al_tick(
+            plan(zona, atr, rr, costo_pct=costo_pct, costo_max_r=costo_max_r),
+            direccion, tick, costo_pct)
+        marcar_agotado(zona, velas)
+        zona["vivo"] = sigue_vivo(zona, velas)
+        ok, motivo = operable(zona, precio, atr, stop_max_atr)
+        zona["operable"], zona["motivo_operable"] = ok, motivo
+        if not ok:
+            continue
+        p = zona["plan"]
+        empate, azar = acierto_para_empatar(rr, p["costo_r"])
+        return {
+            "zona": zona,
+            "accion": "BUY" if direccion == 1 else "SELL",
+            "tipo_orden": ("limite de compra" if direccion == 1
+                           else "limite de venta"),
+            "motivo_operable": motivo,
+            "distancia_pct": abs(p["entrada"] - precio) / precio * 100,
+            "invalida": zona["bot"] if direccion == 1 else zona["top"],
+            "contra_tf": [], "favor_tf": favor,
+            "contracorriente": False,
+            "confluencia": [texto],
+            "acierto_empate": empate,
+            "acierto_azar": azar,
+            "gatillo": texto,
+        }
+    return None
+
+
 def marcar_agotado(zona, velas):
     """Anota cuanto del objetivo ya se negoceo despues de que nacio la zona.
 
@@ -1005,6 +1189,12 @@ def analizar(simbolo, tf="15m", dias=3.0, rr=3.0, costo_max_r=0.15,
         z["confluencia"] = activos
         z["falta_confluencia"] = faltan
     rec = recomendar(todas, precio, ctx, rr)
+    gatillo = proponer_gatillo(
+        velas, precio, atr_final, tf, ctx, rr, costo_pct, costo_max_r,
+        tick, stop_max_atr)
+    if gatillo and (rec is None
+                    or gatillo["zona"]["direccion"] == rec["zona"]["direccion"]):
+        rec = gatillo
 
     zonas = todas[:top]
     if rec and rec["zona"] not in zonas:
@@ -1134,6 +1324,18 @@ def escribir_pine(simbolo, tf, zonas, velas, rr, dias):
             "style=line.style_dotted, width=1)",
         ]
         vwap = ind.vwap_diario(velas)[-1]
+        cierres = [v.cierre for v in velas]
+        for per in MEDIAS:
+            media = ind.sma(cierres, per)[-1]
+            if not media:
+                continue
+            lineas += [
+                f"    line.new({desde_hoy}, {media:.10g}, der, {media:.10g}, "
+                "xloc=xloc.bar_time, color=color.new(#c58bff, 20), width=1)",
+                f"    label.new(der, {media:.10g}, \"MA{per}\", xloc=xloc.bar_time, "
+                "style=label.style_label_left, color=color.new(#c58bff, 40), "
+                "textcolor=color.white, size=size.tiny)",
+            ]
         if vwap:
             lineas += [
                 "    // VWAP del dia UTC, desde la primera vela de la sesion",
@@ -1221,6 +1423,8 @@ def main():
     else:
         z, pl = r["zona"], r["zona"]["plan"]
         print(f"EL TRADE: {r['accion']}  {a['simbolo']}  {a['tf']}")
+        if r.get("gatillo"):
+            print(f"  gatillo   {r['gatillo']}")
         print("=" * 78)
         print(f"  entrada   {pl['entrada']:.{ancho}f}   ({r['tipo_orden']}, "
               f"a {r['distancia_pct']:.2f}% del precio)")

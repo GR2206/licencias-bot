@@ -84,6 +84,19 @@ def vwap_diario(velas):
     return salida
 
 
+def sma(valores, periodo):
+    """Media simple. Es la MA del grafico de Binance (MA 7, 25, 99, 200)."""
+    salida = [None] * len(valores)
+    if len(valores) < periodo or periodo <= 0:
+        return salida
+    acum = sum(valores[:periodo])
+    salida[periodo - 1] = acum / periodo
+    for i in range(periodo, len(valores)):
+        acum += valores[i] - valores[i - periodo]
+        salida[i] = acum / periodo
+    return salida
+
+
 def ema(valores, periodo):
     """EMA con el mismo arranque que Pine: SMA de las primeras `periodo` velas."""
     salida = [None] * len(valores)
