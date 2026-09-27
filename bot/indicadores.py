@@ -56,6 +56,62 @@ def desde_klines(klines) -> list:
     return velas
 
 
+def _ny_offset_ms(ms):
+    """Nueva York contra UTC, con el horario de verano de Estados Unidos.
+
+    El cambio es el segundo domingo de marzo a las 07:00 UTC y el primer
+    domingo de noviembre a las 06:00 UTC. Va a mano para no depender de tzdata,
+    que en Termux y en la app no siempre está instalado.
+    """
+    from datetime import datetime, timezone
+    dt = datetime.fromtimestamp(ms / 1000, timezone.utc)
+
+    def domingo(year, month, n):
+        primero = datetime(year, month, 1, tzinfo=timezone.utc)
+        return 1 + (6 - primero.weekday()) % 7 + (n - 1) * 7
+
+    inicio = datetime(dt.year, 3, domingo(dt.year, 3, 2), 7, tzinfo=timezone.utc)
+    fin = datetime(dt.year, 11, domingo(dt.year, 11, 1), 6, tzinfo=timezone.utc)
+    horas = -4 if inicio <= dt < fin else -5
+    return horas * 3_600_000
+
+
+def clave_sesion_cme(ms):
+    """Día de la sesión CME. Arranca a las 18:00 de Nueva York."""
+    local = ms + _ny_offset_ms(ms)
+    dias = local // 86_400_000
+    hora = (local % 86_400_000) // 3_600_000
+    if hora < 18:
+        dias -= 1
+    return dias
+
+
+def vwap_cme(velas):
+    """VWAP de la sesión electrónica, reiniciado a las 18:00 de Nueva York.
+
+    Es el valor que se mira en un futuro de NinjaTrader. El de las 00:00 UTC
+    parte la sesión por la mitad y deja el largo y el corto del lado equivocado.
+    """
+    salida = [None] * len(velas)
+    sesion = None
+    cum_pv = 0.0
+    cum_v = 0.0
+    for i, v in enumerate(velas):
+        clave = clave_sesion_cme(v.tiempo)
+        if clave != sesion:
+            sesion = clave
+            cum_pv = 0.0
+            cum_v = 0.0
+        vol = v.volumen or 0.0
+        if vol > 0:
+            tipico = (v.maximo + v.minimo + v.cierre) / 3.0
+            cum_pv += tipico * vol
+            cum_v += vol
+        if cum_v > 0:
+            salida[i] = cum_pv / cum_v
+    return salida
+
+
 def vwap_diario(velas):
     """VWAP que reinicia a las 00:00 UTC.
 

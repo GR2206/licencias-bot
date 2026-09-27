@@ -16,10 +16,10 @@ de donde salen las velas y cuanto cuesta operar, y mezclarlas es un error que no
 da ninguna senal: leer spot y cobrar comision de futuros da la mitad del piso
 del stop que corresponde.
 
-Los precios salen de Binance, asi que por ahora esto anda con cripto y nada mas.
-Para oro, forex o acciones hace falta una fuente de velas que todavia no tengo:
-Yahoo devuelve el forex redondeado al pip y Dukascopy tarda demasiado. Es justo
-el agujero que taparia conectar el MCP de TradingView.
+Los precios de cripto salen de Binance. Los futuros de NinjaTrader (ES, NQ,
+oro, petroleo y el resto de la lista) salen del contrato continuo de CME, que
+es el grafico del frente. No es la conexion de la plataforma de NinjaTrader:
+es la misma curva, con el tick del contrato y el VWAP de las 18:00 de Nueva York.
 
 Y resuelve otro problema: yo puedo LEER precios y calcular donde estan las
 zonas, pero no puedo DIBUJAR en tu grafico de TradingView. El MCP oficial de
@@ -60,6 +60,7 @@ import math
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 
@@ -84,17 +85,75 @@ MERCADOS = {
     "spot": {"base": ESPEJO, "klines": "/api/v3/klines",
              "ticker": "/api/v3/ticker/price", "costo": 0.20,
              "nombre": "spot (espejo publico)"},
+    # Comisión de un futuro CME en una cuenta chica, más un tick de ida y
+    # vuelta, medida como porcentaje del precio. No es la de Binance: con
+    # 0.10% el piso del stop rechazaría trades que en el futuro sí cierran.
+    "ninjatrader": {"base": "", "klines": "", "ticker": "", "costo": 0.02,
+                    "nombre": "NinjaTrader · CME continuo"},
 }
 ORDEN_RESPALDO = ["futuros", "spot"]
+
+# Futuros que se grafican en NinjaTrader. El símbolo de la mesa es el del
+# contrato (ES, MNQ) y yahoo es el continuo del frente. El tick es el mínimo
+# que acepta la orden en el exchange.
+CONTRATOS = {
+    "ES": {"yahoo": "ES=F", "tick": 0.25, "nombre": "ES · S&P 500"},
+    "NQ": {"yahoo": "NQ=F", "tick": 0.25, "nombre": "NQ · Nasdaq"},
+    "YM": {"yahoo": "YM=F", "tick": 1, "nombre": "YM · Dow"},
+    "RTY": {"yahoo": "RTY=F", "tick": 0.10, "nombre": "RTY · Russell"},
+    "MES": {"yahoo": "MES=F", "tick": 0.25, "nombre": "MES · Micro S&P"},
+    "MNQ": {"yahoo": "MNQ=F", "tick": 0.25, "nombre": "MNQ · Micro Nasdaq"},
+    "MYM": {"yahoo": "MYM=F", "tick": 1, "nombre": "MYM · Micro Dow"},
+    "M2K": {"yahoo": "M2K=F", "tick": 0.10, "nombre": "M2K · Micro Russell"},
+    "CL": {"yahoo": "CL=F", "tick": 0.01, "nombre": "CL · Petróleo"},
+    "MCL": {"yahoo": "MCL=F", "tick": 0.01, "nombre": "MCL · Micro petróleo"},
+    "GC": {"yahoo": "GC=F", "tick": 0.10, "nombre": "GC · Oro"},
+    "MGC": {"yahoo": "MGC=F", "tick": 0.10, "nombre": "MGC · Micro oro"},
+    "SI": {"yahoo": "SI=F", "tick": 0.005, "nombre": "SI · Plata"},
+    "NG": {"yahoo": "NG=F", "tick": 0.001, "nombre": "NG · Gas"},
+    "6E": {"yahoo": "6E=F", "tick": 0.00005, "nombre": "6E · Euro"},
+    "6B": {"yahoo": "6B=F", "tick": 0.0001, "nombre": "6B · Libra"},
+    "6J": {"yahoo": "6J=F", "tick": 0.0000005, "nombre": "6J · Yen"},
+}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Datos
 # ─────────────────────────────────────────────────────────────────────────────
+def _pedido(url):
+    return urllib.request.Request(url, headers={
+        "User-Agent": ("Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 "
+                       "(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"),
+        "Accept": "application/json",
+    })
+
+
 def _pedir(url, timeout=30):
-    pedido = urllib.request.Request(url, headers={"User-Agent": "zonas/1.0"})
-    with urllib.request.urlopen(pedido, timeout=timeout) as r:
+    with urllib.request.urlopen(_pedido(url), timeout=timeout) as r:
         return json.loads(r.read())
+
+
+_ultimo_yahoo = 0.0
+
+
+def _pedir_yahoo(url):
+    """Yahoo corta con 429 si CALCULAR TODO encadena los contratos."""
+    global _ultimo_yahoo
+    espera = 0.4 - (time.time() - _ultimo_yahoo)
+    if espera > 0:
+        time.sleep(espera)
+    ultimo = None
+    for intento in range(4):
+        try:
+            datos = _pedir(url)
+            _ultimo_yahoo = time.time()
+            return datos
+        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError) as e:
+            ultimo = e
+            if "429" not in str(e) or intento == 3:
+                raise
+            time.sleep(1.5 * (intento + 1))
+    raise ultimo
 
 
 def _klines_de(mercado, simbolo, tf, velas_totales):
@@ -118,8 +177,115 @@ def _klines_de(mercado, simbolo, tf, velas_totales):
     return ind.desde_klines(filas)[:-1]
 
 
+def _rango_yahoo(dias, tope):
+    dias = max(1, min(int(math.ceil(dias)), tope))
+    if dias <= 5:
+        return "5d"
+    if dias <= 10:
+        return "10d"
+    if dias <= 15:
+        return "15d"
+    if dias <= 30:
+        return "1mo"
+    if dias <= 90:
+        return "3mo"
+    if dias <= 180:
+        return "6mo"
+    if dias <= 365:
+        return "1y"
+    return "2y"
+
+
+# Yahoo no tiene 4h. Esas velas se arman con las de 1h. El tope es el máximo
+# de días que esa resolución deja bajar.
+_YAHOO_INTERVALO = {
+    "5m": ("5m", 59),
+    "15m": ("15m", 59),
+    "30m": ("30m", 59),
+    "1h": ("60m", 729),
+    "4h": ("60m", 729),
+}
+_precio_cme = {}
+
+
+def _agrupar(velas, minutos):
+    """Junta velas en bloques cerrados de `minutos`. El bloque abierto se deja afuera."""
+    paso = minutos * 60_000
+    grupos = {}
+    orden = []
+    for v in velas:
+        t0 = v.tiempo - (v.tiempo % paso)
+        if t0 not in grupos:
+            orden.append(t0)
+            grupos[t0] = ind.Vela(t0, v.apertura, v.maximo, v.minimo,
+                                  v.cierre, v.volumen or 0.0)
+        else:
+            g = grupos[t0]
+            g.maximo = max(g.maximo, v.maximo)
+            g.minimo = min(g.minimo, v.minimo)
+            g.cierre = v.cierre
+            g.volumen += v.volumen or 0.0
+    ahora = int(time.time() * 1000)
+    return [grupos[t0] for t0 in orden if t0 + paso <= ahora]
+
+
+def _velas_yahoo(simbolo, tf, velas_totales):
+    """Velas del continuo CME. El símbolo es el de NinjaTrader (ES, no ES=F)."""
+    contrato = CONTRATOS.get(simbolo)
+    if not contrato:
+        raise RuntimeError(f"{simbolo} no está entre los futuros de NinjaTrader")
+    if tf not in _YAHOO_INTERVALO:
+        raise RuntimeError(f"NinjaTrader no tiene la temporalidad {tf}")
+    intervalo, tope = _YAHOO_INTERVALO[tf]
+    minutos = 60 if tf == "4h" else MINUTOS[tf]
+    pedidas = velas_totales * (4 if tf == "4h" else 1) + 8
+    # La sesión electrónica dura unas 23 horas, no 24.
+    dias = pedidas * minutos / 60.0 / 23.0 + 1
+    rango = _rango_yahoo(dias, tope)
+    yahoo = urllib.parse.quote(contrato["yahoo"], safe="")
+    url = ("https://query1.finance.yahoo.com/v8/finance/chart/"
+           f"{yahoo}?interval={intervalo}&range={rango}&includePrePost=true")
+    datos = _pedir_yahoo(url)
+    return _velas_de_respuesta(datos, simbolo, tf, velas_totales)
+
+
+def _velas_de_respuesta(datos, simbolo, tf, velas_totales):
+    result = ((datos or {}).get("chart") or {}).get("result") or []
+    if not result:
+        raise RuntimeError(f"no vinieron velas de {simbolo}")
+    meta = result[0].get("meta") or {}
+    px = meta.get("regularMarketPrice")
+    if px:
+        _precio_cme[simbolo] = (time.time(), float(px))
+    ts = result[0].get("timestamp") or []
+    quote = ((result[0].get("indicators") or {}).get("quote") or [{}])[0]
+    opens = quote.get("open") or []
+    highs = quote.get("high") or []
+    lows = quote.get("low") or []
+    closes = quote.get("close") or []
+    vols = quote.get("volume") or []
+    velas = []
+    for i, t in enumerate(ts):
+        if i >= len(opens) or None in (opens[i], highs[i], lows[i], closes[i]):
+            continue
+        vol = vols[i] if i < len(vols) and vols[i] else 0.0
+        velas.append(ind.Vela(
+            int(t) * 1000, float(opens[i]), float(highs[i]),
+            float(lows[i]), float(closes[i]), float(vol)))
+    if tf == "4h":
+        velas = _agrupar(velas, 240)
+    else:
+        paso = MINUTOS[tf] * 60_000
+        ahora = int(time.time() * 1000)
+        if velas and velas[-1].tiempo + paso > ahora:
+            velas = velas[:-1]
+    if len(velas) > velas_totales:
+        velas = velas[-velas_totales:]
+    return velas
+
+
 def bajar(simbolo, tf, velas_totales, mercado="futuros"):
-    """Velas de Binance. Devuelve (velas, mercado_usado).
+    """Velas del mercado pedido. Devuelve (velas, mercado_usado).
 
     Intenta el mercado pedido y cae al otro si no responde. Binance bloquea la
     API de futuros por region (HTTP 451), asi que el respaldo importa: sin el,
@@ -128,6 +294,16 @@ def bajar(simbolo, tf, velas_totales, mercado="futuros"):
     realidad se leyo spot es mentirse en el unico numero que decide si la
     operacion cierra.
     """
+    if mercado == "ninjatrader":
+        try:
+            velas = _velas_yahoo(simbolo, tf, velas_totales)
+        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError,
+                OSError, KeyError, ValueError, TypeError, RuntimeError) as e:
+            raise RuntimeError(f"No pude bajar {simbolo} {tf} — {e}") from e
+        if not velas:
+            raise RuntimeError(f"No pude bajar {simbolo} {tf} — no vino ninguna vela")
+        return velas, "ninjatrader"
+
     intentos = [mercado] + [m for m in ORDEN_RESPALDO if m != mercado]
     ultimo = None
     for candidato in intentos:
@@ -155,6 +331,12 @@ def tick_de(simbolo, mercado):
     """
     clave = (simbolo, mercado)
     if clave in _ticks:
+        return _ticks[clave]
+
+    if mercado == "ninjatrader":
+        contrato = CONTRATOS.get(simbolo)
+        tick = contrato["tick"] if contrato else None
+        _ticks[clave] = tick if tick and tick > 0 else None
         return _ticks[clave]
 
     m = MERCADOS[mercado]
@@ -227,6 +409,18 @@ def ajustar_al_tick(pl, direccion, tick, costo_pct):
 
 def precio_vivo(simbolo, mercado):
     """Ultimo precio negociado, que no es el cierre de la ultima vela cerrada."""
+    if mercado == "ninjatrader":
+        guardado = _precio_cme.get(simbolo)
+        if guardado and time.time() - guardado[0] < 45:
+            return guardado[1]
+        try:
+            _velas_yahoo(simbolo, "1h", 5)
+        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError,
+                OSError, RuntimeError, KeyError, ValueError, TypeError):
+            return None
+        guardado = _precio_cme.get(simbolo)
+        return guardado[1] if guardado else None
+
     m = MERCADOS[mercado]
     try:
         return float(_pedir(f"{m['base']}{m['ticker']}?symbol={simbolo}", 15)
@@ -324,15 +518,19 @@ def order_blocks(velas, cfg, desde_indice):
     return encontrados
 
 
-def decimales(precio):
+def decimales(precio, tick=None):
     """Cuantos decimales hacen falta para ver 5 cifras significativas.
 
     Con un precio fijo se rompe en los dos extremos: CHZ a 0.0162 con 4
     decimales muestra la zona como "0.0158 — 0.0158", que no dice nada.
+    Si el tick pide más decimales que el precio (el euro, 0.00005), manda el tick.
     """
     if precio <= 0:
         return 2
-    return max(2, 4 - int(math.floor(math.log10(precio))))
+    n = max(2, 4 - int(math.floor(math.log10(precio))))
+    if tick and tick > 0:
+        n = max(n, max(0, -int(math.floor(math.log10(tick) + 1e-12))))
+    return n
 
 
 def _volumen_relativo(velas, i, ventana=20):
@@ -648,7 +846,7 @@ RECORRIDO_AGOTADO = 0.8
 # gatillo.
 MEDIAS = (7, 25, 99, 200)
 MEDIAS_GATILLO = (25, 99, 200)
-VERSION = 20
+VERSION = 21
 # El RSI del grafico de Binance en el celular es 6, no el 14 de los libros.
 # El MACD es 12, 26, 9: DIF, DEA, y MACD = DIF - DEA.
 RSI_TRADE = 6
@@ -1234,7 +1432,10 @@ def analizar(simbolo, tf="15m", dias=3.0, rr=3.0, costo_max_r=0.15,
     atr_final = ind.atr(velas, cfg.atr_periodo)[-1] or 0.0
 
     tick = tick_de(simbolo, usado)
-    vwap = ind.vwap_diario(velas)[-1]
+    if usado == "ninjatrader":
+        vwap = ind.vwap_cme(velas)[-1]
+    else:
+        vwap = ind.vwap_diario(velas)[-1]
     osc = lectura_osciladores(velas)
     todas = order_blocks(velas, cfg, desde) + fvgs(velas, desde)
     for z in todas:
@@ -1285,7 +1486,9 @@ def analizar(simbolo, tf="15m", dias=3.0, rr=3.0, costo_max_r=0.15,
         "vwap": vwap,
         "osciladores": osc,
         "atr": atr_final, "atr_pct": atr_pct,
-        "decimales": decimales(precio),
+        "decimales": decimales(precio, tick),
+        "vwap_nombre": ("VWAP de la sesión" if usado == "ninjatrader"
+                        else "VWAP del día"),
         "velas": len(velas), "en_ventana": en_ventana,
         "desde_ms": velas[desde].tiempo, "hasta_ms": velas[-1].tiempo,
         "contexto": ctx,

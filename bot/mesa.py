@@ -49,7 +49,7 @@ POR_DEFECTO = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
 TFS = ["5m", "15m", "30m", "1h", "4h"]
 # El numero que se ve abajo de la pagina. Si no dice este, el archivo del
 # celular es viejo. Se sube junto con zonas.VERSION.
-VERSION = 20
+VERSION = 21
 
 # Cuantas velas se deja puesta la orden limite. En 15m son 6 horas. Pasado
 # eso, si el precio no toco la entrada, el trade vencio: no es una perdida,
@@ -437,6 +437,7 @@ def _para_web(a):
         "stop_max_atr": a["stop_max_atr"], "tick": a["tick"],
         "precio": pr(a["precio"]), "ultimo_cierre": pr(a["ultimo_cierre"]),
         "vwap": pr(a.get("vwap")),
+        "vwap_nombre": a.get("vwap_nombre") or "VWAP del día",
         "osciladores": _osciladores_web(a.get("osciladores")),
         "atr": pr(a["atr"]), "atr_pct": round(a["atr_pct"], 2),
         "decimales": d,
@@ -586,6 +587,13 @@ PAGINA = """<!DOCTYPE html>
 <main>
   <div class="panel">
     <div class="campo">
+      <label for="casa">Plataforma</label>
+      <select id="casa">
+        <option value="binance">Binance</option>
+        <option value="ninjatrader">NinjaTrader</option>
+      </select>
+    </div>
+    <div class="campo">
       <label for="simbolo">Activo</label>
       <select id="simbolo"></select>
     </div>
@@ -603,7 +611,7 @@ PAGINA = """<!DOCTYPE html>
         <input id="rr" type="number" value="3" min="1" max="10" step="0.5">
       </div>
     </div>
-    <div class="campo">
+    <div class="campo" id="campoMercado">
       <label for="mercado">Mercado</label>
       <select id="mercado">
         <option value="futuros">futuros USDT-M (0.10% ida y vuelta)</option>
@@ -639,18 +647,46 @@ let CFG = {simbolos: [], tfs: []};
 function fijo(x, d) { return (x === null || x === undefined) ? "—"
                             : Number(x).toFixed(d); }
 
+function casaActual() {
+  const id = $("#casa").value;
+  return (CFG.casas || []).find(c => c.id === id) || (CFG.casas || [])[0];
+}
+
+function pintarSimbolos(casaId) {
+  const casa = (CFG.casas || []).find(c => c.id === casaId) || (CFG.casas || [])[0];
+  if (!casa) {
+    $("#simbolo").innerHTML = (CFG.simbolos || []).map(
+      s => `<option value="${s}">${s}</option>`).join("");
+    return;
+  }
+  $("#casa").value = casa.id;
+  CFG.simbolos = casa.simbolos.map(s => s.id);
+  $("#simbolo").innerHTML = casa.simbolos.map(
+    s => `<option value="${esc(s.id)}">${esc(s.nombre)}</option>`).join("");
+  const esBinance = casa.id === "binance";
+  $("#campoMercado").style.display = esBinance ? "" : "none";
+  if (esBinance && $("#mercado").value !== "futuros" && $("#mercado").value !== "spot") {
+    $("#mercado").value = "futuros";
+  }
+  $("#lista").innerHTML = "";
+}
+
 async function inicio() {
   const d = await (await fetch("api/config")).json();
   CFG = d;
-  $("#simbolo").innerHTML = d.simbolos.map(
-    s => `<option value="${s}">${s}</option>`).join("");
   $("#tf").innerHTML = d.tfs.map(
     t => `<option value="${t}"${t === d.tf_def ? " selected" : ""}>${t}</option>`
   ).join("");
+  pintarSimbolos("binance");
 
   // El enlace se puede guardar con el activo ya elegido: ?simbolo=CHZUSDT
   const q = new URLSearchParams(location.search);
-  if (q.get("simbolo")) $("#simbolo").value = q.get("simbolo").toUpperCase();
+  if (q.get("simbolo")) {
+    const want = q.get("simbolo").toUpperCase();
+    const casa = (CFG.casas || []).find(c => c.simbolos.some(s => s.id === want));
+    if (casa) pintarSimbolos(casa.id);
+    $("#simbolo").value = want;
+  }
   if (q.get("tf")) $("#tf").value = q.get("tf");
   if (q.get("calcular") !== null) calcular();
 }
@@ -666,7 +702,8 @@ async function calcular() {
   const p = new URLSearchParams({
     simbolo: $("#simbolo").value, tf: $("#tf").value,
     dias: $("#dias").value, rr: $("#rr").value,
-    mercado: $("#mercado").value,
+    mercado: casaActual() && casaActual().id === "ninjatrader"
+      ? "ninjatrader" : $("#mercado").value,
   });
   try {
     const d = await (await fetch("api/calcular?" + p)).json();
@@ -719,7 +756,8 @@ async function buscar() {
       const p = new URLSearchParams({
         simbolo: s, tf,
         dias: $("#dias").value, rr: $("#rr").value,
-        mercado: $("#mercado").value,
+        mercado: casaActual() && casaActual().id === "ninjatrader"
+          ? "ninjatrader" : $("#mercado").value,
       });
       const d = await (await fetch("api/buscar?" + p)).json();
       if (d.error) throw new Error(d.error);
@@ -730,7 +768,8 @@ async function buscar() {
       engancharFilas();
     } else {
       $("#lista").innerHTML =
-        `<div class="nota nGris" style="margin-top:12px">Revisé ${simbolos.length} pares en ${esc(tf)}. No encontré ningún trade.</div>`;
+        `<div class="nota nGris" style="margin-top:12px">Revisé ${simbolos.length} ${
+          $("#casa").value === "ninjatrader" ? "activos" : "pares"} en ${esc(tf)}. No encontré ningún trade.</div>`;
     }
   } catch (e) {
     $("#lista").innerHTML =
@@ -776,6 +815,14 @@ function pintar(d) {
   const r = d.recomendacion, dec = d.decimales;
   let h = "";
 
+  if (d.mercado === "ninjatrader") {
+    h += `<div class="panel nota nGris" style="margin-bottom:12px">
+      <b>Futuros de NinjaTrader.</b> Las velas son el contrato continuo de CME,
+      el del frente, con la sesión electrónica. El VWAP reinicia a las 18:00
+      de Nueva York. La comisión es 0.02% ida y vuelta: una estimación de la
+      comisión del futuro más un tick.</div>`;
+  }
+
   if (d.respaldo) {
     h += `<div class="panel nota nAmbar" style="margin-bottom:12px">
       <b>Pediste ${esc(d.mercado_pedido)} y Binance no respondio.</b> Esto salio
@@ -807,7 +854,7 @@ function pintar(d) {
         <tr><td>se invalida</td><td>cierre de ${esc(d.tf)} pasando
             ${fijo(r.invalida, dec)}</td></tr>
         <tr><td>la zona nacio</td><td>${esc(r.nacio)} UTC</td></tr>
-        ${d.vwap ? `<tr><td>VWAP del día</td><td>${fijo(d.vwap, dec)}</td></tr>` : ""}
+        ${d.vwap ? `<tr><td>${esc(d.vwap_nombre || "VWAP del día")}</td><td>${fijo(d.vwap, dec)}</td></tr>` : ""}
       </table>
       <div class="nota nGris">${esc(r.motivos.join("; "))}</div>`;
 
@@ -906,7 +953,7 @@ function pintar(d) {
     · calculado ${esc(d.calculado)} UTC<br>
     datos de ${esc(d.mercado_nombre)} · ATR ${fijo(d.atr, dec)}
     (${d.atr_pct}% del precio)${
-      d.vwap ? " · VWAP del día " + fijo(d.vwap, dec) : ""} · comision ${d.costo_pct}% ida y vuelta${
+      d.vwap ? " · " + (d.vwap_nombre || "VWAP del día") + " " + fijo(d.vwap, dec) : ""} · comision ${d.costo_pct}% ida y vuelta${
       d.tick ? " · precios redondeados al tick de " + d.tick : ""}<br><br>
     El RR que figura puede quedar abajo del que pediste: al llevar los precios al
     tick del par, el stop se redondea alejandose de la entrada y el objetivo
@@ -980,6 +1027,7 @@ async function cargarBitacora(actualizar) {
   }
 }
 
+$("#casa").addEventListener("change", () => pintarSimbolos($("#casa").value));
 $("#calcular").addEventListener("click", calcular);
 $("#buscar").addEventListener("click", buscar);
 $("#actualizarBit").addEventListener("click", () => cargarBitacora(true));
@@ -1045,18 +1093,31 @@ def atender(path):
                 "simbolos": Manejador.simbolos,
                 "tfs": TFS,
                 "tf_def": Manejador.tf_def,
+                "casas": [
+                    {"id": "binance", "nombre": "Binance", "mercado": "futuros",
+                     "simbolos": [{"id": s, "nombre": s} for s in Manejador.simbolos]},
+                    {"id": "ninjatrader", "nombre": "NinjaTrader",
+                     "mercado": "ninjatrader",
+                     "simbolos": [{"id": s, "nombre": c["nombre"]}
+                                  for s, c in zonas.CONTRATOS.items()]},
+                ],
             })
         if ruta in ("/api/calcular", "/api/buscar"):
             simbolo = uno("simbolo").upper()
-            if not simbolo.isalnum():
+            mercado = uno("mercado", "futuros")
+            if mercado not in zonas.MERCADOS:
+                mercado = "futuros"
+            if mercado == "ninjatrader":
+                if simbolo not in zonas.CONTRATOS:
+                    return json_respuesta(
+                        {"error": f"{simbolo} no está entre los futuros de NinjaTrader"},
+                        400)
+            elif not simbolo.isalnum():
                 return json_respuesta({"error": "simbolo invalido"}, 400)
             tf = uno("tf", Manejador.tf_def)
             if tf not in zonas.MINUTOS:
                 return json_respuesta(
                     {"error": f"temporalidad {tf} desconocida"}, 400)
-            mercado = uno("mercado", "futuros")
-            if mercado not in zonas.MERCADOS:
-                mercado = "futuros"
             try:
                 dias = max(1.0, min(30.0, float(uno("dias", "3"))))
                 rr = max(1.0, min(10.0, float(uno("rr", "3"))))

@@ -26,7 +26,14 @@ const listo = (async () => {
       }
       const xhr = new XMLHttpRequest();
       xhr.open("GET", url, false);
-      xhr.send(null);
+      try {
+        xhr.send(null);
+      } catch (e) {
+        throw new Error("el navegador bloqueó la descarga; en la app entra directo");
+      }
+      if (xhr.status === 0) {
+        throw new Error("el navegador bloqueó la descarga; en la app entra directo");
+      }
       if (xhr.status < 200 || xhr.status >= 300) {
         throw new Error("HTTP " + xhr.status);
       }

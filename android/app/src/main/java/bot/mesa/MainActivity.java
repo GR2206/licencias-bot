@@ -51,6 +51,9 @@ public class MainActivity extends Activity {
             con.setReadTimeout(30000);
             con.setInstanceFollowRedirects(true);
             con.setRequestProperty("Accept", "application/json");
+            con.setRequestProperty("User-Agent",
+                    "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 "
+                            + "(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36");
             int status;
             try {
                 status = con.getResponseCode();
