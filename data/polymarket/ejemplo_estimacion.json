@@ -1,0 +1,23 @@
+[
+  {
+    "slug": "reemplazar-por-un-slug-real",
+    "probabilidad": 0.55,
+    "confianza": "media",
+    "lado": "YES",
+    "condicion_resolucion": "YES paga solo si ocurre exactamente lo que dice la regla oficial, en la fecha oficial.",
+    "a_favor": [
+      "fuente primaria con fecha",
+      "segunda evidencia independiente"
+    ],
+    "en_contra": [
+      "el mercado puede tener información que vos no viste",
+      "la regla de resolución puede no coincidir con el titular"
+    ],
+    "hipotesis_error_mercado": "qué sabe el otro lado, y por qué igual está mal el precio",
+    "fuentes": [
+      {"url": "https://ejemplo.test/fuente-1", "date": "2026-09-20"},
+      {"url": "https://ejemplo.test/fuente-2", "date": "2026-09-21"}
+    ],
+    "razonamiento": "una línea que se pueda auditar dentro de un mes"
+  }
+]

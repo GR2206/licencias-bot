@@ -1,0 +1,6 @@
+data/polymarket/registro.csv
+data/polymarket/telegram.env
+data/polymarket/secrets.env
+__pycache__/
+*.pyc
+.venv/
