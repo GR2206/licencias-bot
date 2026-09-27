@@ -49,7 +49,7 @@ POR_DEFECTO = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
 TFS = ["5m", "15m", "30m", "1h", "4h"]
 # El numero que se ve abajo de la pagina. Si no dice este, el archivo del
 # celular es viejo. Se sube junto con zonas.VERSION.
-VERSION = 13
+VERSION = 14
 
 # Cuantas velas se deja puesta la orden limite. En 15m son 6 horas. Pasado
 # eso, si el precio no toco la entrada, el trade vencio: no es una perdida,
@@ -710,8 +710,13 @@ async function buscar() {
       if (d.error) throw new Error(d.error);
       if (d.lado) encontrados.push(d);
     }
-    $("#lista").innerHTML = filasHtml(encontrados);
-    engancharFilas();
+    if (encontrados.length) {
+      $("#lista").innerHTML = filasHtml(encontrados);
+      engancharFilas();
+    } else {
+      $("#lista").innerHTML =
+        `<div class="nota nGris" style="margin-top:12px">Revisé ${simbolos.length} pares en ${esc(tf)}. No encontré ningún trade.</div>`;
+    }
   } catch (e) {
     $("#lista").innerHTML =
       `<div class="panel nota nRojo">no pude revisar: ${esc(e.message)}</div>`
