@@ -4,9 +4,12 @@ const motorEl = () => document.getElementById("motor");
 
 const listo = (async () => {
   try {
-    pyodide = await loadPyodide({
-      indexURL: "https://cdn.jsdelivr.net/pyodide/v0.27.7/full/",
-    });
+    const etiqueta = document.querySelector("script[src*='pyodide.js']");
+    const srcPy = (etiqueta && etiqueta.getAttribute("src")) || "";
+    const indexURL = srcPy.startsWith("http")
+      ? "https://cdn.jsdelivr.net/pyodide/v0.27.7/full/"
+      : new URL("pyodide/", location.href).href;
+    pyodide = await loadPyodide({indexURL});
     pyodide.FS.mkdirTree("/app");
     const archivos = globalThis.ARCHIVOS_MESA || {};
     for (const nombre of ["indicadores.py", "estrategia.py", "zonas.py", "mesa.py"]) {
@@ -18,6 +21,9 @@ const listo = (async () => {
     if (guardada != null) pyodide.FS.writeFile("/bitacora.json", guardada);
 
     globalThis.pedirNavegador = (url) => {
+      if (globalThis.Mesa && typeof Mesa.pedir === "function") {
+        return Mesa.pedir(url);
+      }
       const xhr = new XMLHttpRequest();
       xhr.open("GET", url, false);
       xhr.send(null);
@@ -26,6 +32,11 @@ const listo = (async () => {
       }
       return xhr.responseText;
     };
+    if (globalThis.Mesa && Mesa.pedir) {
+      const sub = document.querySelector(".sub");
+      if (sub) sub.textContent =
+        "App de la mesa. Elegis el activo, calculas, y salen los precios. No manda ordenes.";
+    }
 
     await pyodide.runPythonAsync(`
 import os, sys, json, urllib.error
