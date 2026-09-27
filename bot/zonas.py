@@ -40,7 +40,10 @@ Lo que marca:
     con los mismos filtros de calidad que usa el bot (desplazamiento minimo
     medido en ATR y hueco de valor justo).
   * FVG / IMBALANCE: huecos de tres velas sin solapamiento.
-  * NIVELES: maximos y minimos del dia.
+  * NIVELES: maximos y minimos del dia, y el VWAP de la sesion UTC.
+  * VWAP: si la zona queda entera del lado equivocado del valor del dia, no
+    se opera. Si el VWAP cae en la mitad cercana de la caja, la entrada se
+    mueve ahi y el stop de la zona no se toca.
 
 Y las ordena por que tan imponentes son, con un puntaje explicado, para que no
 haya que mirar veinte cajas iguales. El puntaje ordena la mirada y nada mas: los
@@ -578,7 +581,7 @@ PREMIO_MIN_R = 1.0
 # movimiento. 1.5 ATR en M15 de RUNE, con el precio a 2.2 ATR de la zona,
 # era exactamente el caso de "la senal salio tarde".
 DISTANCIA_MAX_ATR = 1.5
-VERSION = 8
+VERSION = 9
 
 
 def premio_por_delante(zona, precio):
@@ -594,6 +597,70 @@ def premio_por_delante(zona, precio):
     if zona["direccion"] == 1:
         return (p["objetivo"] - precio) / riesgo
     return (precio - p["objetivo"]) / riesgo
+
+
+def afinar_con_vwap(zona, pl, vwap, atr, precio, rr=3.0,
+                    costo_pct=0.10, costo_max_r=0.15, colchon=0.25):
+    """Usa el VWAP del dia para certificar la zona y, si cabe, afinar la entrada.
+
+    Un largo con toda la caja debajo del VWAP, o un corto con toda la caja
+    arriba, esta del lado equivocado del valor: se marca y operable() lo
+    descarta. Tocar el VWAP no es un cuarto punto obligatorio. Mover la entrada
+    solo ocurre si el VWAP cae dentro de la zona y en la mitad cercana al borde
+    de entrada (arriba del medio en un largo, abajo del medio en un corto). El
+    stop sigue siendo el de la zona. Si ese ajuste deja la entrada a mas de
+    DISTANCIA_MAX_ATR, no se mueve: se anota que el VWAP toca la zona y el
+    limite queda en el borde.
+    """
+    pl = dict(pl)
+    pl["vwap"] = vwap
+    pl["vwap_toca"] = False
+    pl["vwap_afino"] = False
+    pl["contra_vwap"] = False
+    if vwap is None or vwap <= 0:
+        return pl
+
+    bot, top = zona["bot"], zona["top"]
+    medio = (bot + top) / 2.0
+    largo = zona["direccion"] == 1
+    if (largo and top < vwap) or (not largo and bot > vwap):
+        pl["contra_vwap"] = True
+        return pl
+    if not (bot <= vwap <= top):
+        return pl
+
+    pl["vwap_toca"] = True
+    cerca = vwap >= medio if largo else vwap <= medio
+    if not cerca:
+        return pl
+    if atr > 0 and DISTANCIA_MAX_ATR > 0 and precio:
+        if abs(vwap - precio) / atr > DISTANCIA_MAX_ATR:
+            return pl
+
+    if largo:
+        stop = zona["bot"] - atr * colchon
+    else:
+        stop = zona["top"] + atr * colchon
+    entrada = vwap
+    riesgo_pct = abs(entrada - stop) / entrada * 100 if entrada else 0.0
+    piso_pct = costo_pct / costo_max_r if costo_max_r > 0 else 0.0
+    ensanchado = 0 < riesgo_pct < piso_pct
+    stop_zona_pct = riesgo_pct
+    if ensanchado:
+        riesgo_pct = piso_pct
+        delta = entrada * piso_pct / 100
+        stop = entrada - delta if largo else entrada + delta
+    riesgo = abs(entrada - stop)
+    objetivo = entrada + riesgo * rr if largo else entrada - riesgo * rr
+    pl.update({
+        "entrada": entrada, "stop": stop, "objetivo": objetivo,
+        "riesgo_pct": riesgo_pct,
+        "costo_r": costo_pct / riesgo_pct if riesgo_pct else 0.0,
+        "ensanchado": ensanchado,
+        "stop_zona_pct": stop_zona_pct,
+        "vwap_afino": True,
+    })
+    return pl
 
 
 def operable(zona, precio, atr=0.0, stop_max_atr=3.0):
@@ -620,6 +687,9 @@ def operable(zona, precio, atr=0.0, stop_max_atr=3.0):
     6. La entrada no puede quedar a mas de DISTANCIA_MAX_ATR. Mas lejos, el
        impulso ya corrio y el limite espera un retroceso que devuelve gran
        parte del movimiento.
+    7. La zona no puede quedar entera del lado equivocado del VWAP del dia.
+       Un largo debajo del valor, o un corto arriba, ya no es un retroceso
+       hacia el precio medio de la sesion.
     """
     entrada = zona["plan"]["entrada"]
     if not zona["vivo"]:
@@ -652,6 +722,9 @@ def operable(zona, precio, atr=0.0, stop_max_atr=3.0):
             return False, (f"el impulso ya se fue: la entrada queda a "
                            f"{lejos:.1f} ATR y el retroceso devolveria gran "
                            f"parte del movimiento")
+
+    if zona["plan"].get("contra_vwap"):
+        return False, ("la zona queda del lado equivocado del VWAP del dia")
 
     if zona["direccion"] == -1:
         return True, "limite de venta, esperando que el precio suba a la zona"
@@ -702,6 +775,13 @@ def congruencia(zona, ctx):
         faltan.append("va contra " + " y ".join(contra))
     else:
         faltan.append("4h y 1h estan mixtos, no confirman el lado")
+
+    # El VWAP no es un cuarto punto. Tocar el valor suma certeza. Quedar del
+    # lado equivocado si bloquea, igual que operable().
+    if zona.get("plan", {}).get("contra_vwap"):
+        faltan.append("la zona queda del lado equivocado del VWAP del dia")
+    elif zona.get("plan", {}).get("vwap_toca"):
+        activos.append("la zona toca el VWAP del dia")
     return activos, faltan
 
 
@@ -781,6 +861,14 @@ def diagnostico(zonas, costo_pct, piso_pct, stop_max_atr, atr_pct, tf):
             "devolver gran parte del impulso, no un retroceso corto. No se "
             "entra a mercado para alcanzarla: si no vuelve cerca, no hay trade.")
 
+    mal_vwap = [z for z in zonas
+                if "lado equivocado del VWAP" in z.get("motivo_operable", "")]
+    if mal_vwap and not operables:
+        return (
+            "Las zonas quedan del lado equivocado del VWAP del dia. Un largo "
+            "con toda la caja debajo del valor, o un corto con toda la caja "
+            "arriba, no es un retroceso hacia el precio medio de la sesion.")
+
     anchas = [z for z in zonas if "demasiado ancha" in z["motivo_operable"]]
     if anchas and all(z["plan"]["ensanchado"] for z in anchas):
         veces = piso_pct / atr_pct if atr_pct else 0
@@ -857,12 +945,15 @@ def analizar(simbolo, tf="15m", dias=3.0, rr=3.0, costo_max_r=0.15,
     atr_final = ind.atr(velas, cfg.atr_periodo)[-1] or 0.0
 
     tick = tick_de(simbolo, usado)
+    vwap = ind.vwap_diario(velas)[-1]
     todas = order_blocks(velas, cfg, desde) + fvgs(velas, desde)
     for z in todas:
         z["puntos"], z["motivos"] = puntaje(z, velas, precio)
         z["plan"] = ajustar_al_tick(
-            plan(z, atr_final, rr, costo_pct=costo_pct,
-                 costo_max_r=costo_max_r),
+            afinar_con_vwap(
+                z, plan(z, atr_final, rr, costo_pct=costo_pct,
+                        costo_max_r=costo_max_r),
+                vwap, atr_final, precio, rr, costo_pct, costo_max_r),
             z["direccion"], tick, costo_pct)
         z["vivo"] = sigue_vivo(z, velas)
         z["operable"], z["motivo_operable"] = operable(z, precio, atr_final,
@@ -894,6 +985,7 @@ def analizar(simbolo, tf="15m", dias=3.0, rr=3.0, costo_max_r=0.15,
         "stop_max_atr": stop_max_atr, "tick": tick,
         "piso_stop_pct": piso_pct,
         "precio": precio, "ultimo_cierre": ultimo_cierre,
+        "vwap": vwap,
         "atr": atr_final, "atr_pct": atr_pct,
         "decimales": decimales(precio),
         "velas": len(velas), "en_ventana": en_ventana,
@@ -1005,6 +1097,16 @@ def escribir_pine(simbolo, tf, zonas, velas, rr, dias):
             "xloc=xloc.bar_time, color=color.new(#9598a1, 30), "
             "style=line.style_dotted, width=1)",
         ]
+        vwap = ind.vwap_diario(velas)[-1]
+        if vwap:
+            lineas += [
+                "    // VWAP del dia UTC, desde la primera vela de la sesion",
+                f"    line.new({desde_hoy}, {vwap:.10g}, der, {vwap:.10g}, "
+                "xloc=xloc.bar_time, color=color.new(#f0b90b, 0), width=2)",
+                f"    label.new(der, {vwap:.10g}, \"VWAP\", xloc=xloc.bar_time, "
+                "style=label.style_label_left, color=color.new(#f0b90b, 20), "
+                "textcolor=color.white, size=size.tiny)",
+            ]
 
     return "\n".join(lineas) + "\n"
 
@@ -1046,6 +1148,8 @@ def main():
     print(f"desde {d0:%Y-%m-%d %H:%M} hasta {d1:%Y-%m-%d %H:%M} UTC")
     print(f"precio {a['precio']:.{ancho}f}   ATR {a['atr']:.{ancho}f} "
           f"({a['atr_pct']:.2f}% del precio)")
+    if a.get("vwap"):
+        print(f"VWAP del dia {a['vwap']:.{ancho}f}")
     print(f"mercado {a['mercado_nombre']}   costo {a['costo_pct']:.3f}% ida y "
           f"vuelta   piso del stop {a['piso_stop_pct']:.2f}%")
     if a["respaldo"]:
@@ -1084,6 +1188,8 @@ def main():
         print("=" * 78)
         print(f"  entrada   {pl['entrada']:.{ancho}f}   ({r['tipo_orden']}, "
               f"a {r['distancia_pct']:.2f}% del precio)")
+        if pl.get("vwap_afino"):
+            print("            afinada al VWAP: cae en la mitad cercana de la zona")
         print(f"  stop loss {pl['stop']:.{ancho}f}")
         print(f"  take prof {pl['objetivo']:.{ancho}f}")
         print(f"  riesgo    {pl['riesgo_pct']:.2f}% del precio, a "

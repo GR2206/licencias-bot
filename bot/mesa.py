@@ -49,7 +49,7 @@ POR_DEFECTO = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
 TFS = ["5m", "15m", "30m", "1h", "4h"]
 # El numero que se ve abajo de la pagina. Si no dice este, el archivo del
 # celular es viejo. Se sube junto con zonas.VERSION.
-VERSION = 8
+VERSION = 9
 
 # Cuantas velas se deja puesta la orden limite. En 15m son 6 horas. Pasado
 # eso, si el precio no toco la entrada, el trade vencio: no es una perdida,
@@ -351,6 +351,8 @@ def _para_web(a):
             "motivos": z["motivos"],
             "confluencia": z.get("confluencia") or [],
             "falta_confluencia": z.get("falta_confluencia") or [],
+            "vwap_toca": bool(p.get("vwap_toca")),
+            "vwap_afino": bool(p.get("vwap_afino")),
         })
 
     ctx = []
@@ -392,6 +394,7 @@ def _para_web(a):
                 z["tiempo"] / 1000, timezone.utc).strftime("%d/%m %H:%M"),
             "nacio_ms": z["tiempo"],
             "confluencia": z.get("confluencia") or [],
+            "vwap_afino": bool(p.get("vwap_afino")),
         }
 
     return {
@@ -402,6 +405,7 @@ def _para_web(a):
         "piso_stop_pct": round(a["piso_stop_pct"], 2),
         "stop_max_atr": a["stop_max_atr"], "tick": a["tick"],
         "precio": pr(a["precio"]), "ultimo_cierre": pr(a["ultimo_cierre"]),
+        "vwap": pr(a.get("vwap")),
         "atr": pr(a["atr"]), "atr_pct": round(a["atr_pct"], 2),
         "decimales": d,
         "desde": datetime.fromtimestamp(
@@ -657,8 +661,15 @@ function pintar(d) {
         <tr><td>se invalida</td><td>cierre de ${esc(d.tf)} pasando
             ${fijo(r.invalida, dec)}</td></tr>
         <tr><td>la zona nacio</td><td>${esc(r.nacio)} UTC</td></tr>
+        ${d.vwap ? `<tr><td>VWAP del día</td><td>${fijo(d.vwap, dec)}</td></tr>` : ""}
       </table>
       <div class="nota nGris">${esc(r.motivos.join("; "))}</div>`;
+
+    if (r.vwap_afino) {
+      h += `<div class="nota nGris"><b>La entrada se afinó al VWAP.</b>
+        El valor del día cae en la mitad cercana de la zona, así que el límite
+        queda ahí y el stop sigue en el borde de la idea.</div>`;
+    }
 
     if (r.confluencia && r.confluencia.length) {
       h += `<div class="nota nGris"><b>Los tres puntos coinciden.</b>
@@ -710,7 +721,9 @@ function pintar(d) {
       <div class="zDet">zona ${fijo(z.piso, dec)} — ${fijo(z.techo, dec)}</div>
       <div class="zDet">entrada ${fijo(z.entrada, dec)} · SL
         ${fijo(z.stop, dec)} · TP ${fijo(z.objetivo, dec)} · riesgo
-        ${z.riesgo_pct}% · costo ${z.costo_r} R</div>
+        ${z.riesgo_pct}% · costo ${z.costo_r} R${
+          z.vwap_afino ? " · entrada afinada al VWAP"
+                       : (z.vwap_toca ? " · toca el VWAP" : "")}</div>
       <div class="zDet" style="margin-top:4px">${
         z.operable ? "✓ " + esc(z.motivo_operable)
                    : "· " + esc(z.motivo_operable)}</div>
@@ -732,7 +745,8 @@ function pintar(d) {
     ${esc(d.simbolo)} ${esc(d.tf)} · ventana ${esc(d.desde)} → ${esc(d.hasta)} UTC
     · calculado ${esc(d.calculado)} UTC<br>
     datos de ${esc(d.mercado_nombre)} · ATR ${fijo(d.atr, dec)}
-    (${d.atr_pct}% del precio) · comision ${d.costo_pct}% ida y vuelta${
+    (${d.atr_pct}% del precio)${
+      d.vwap ? " · VWAP del día " + fijo(d.vwap, dec) : ""} · comision ${d.costo_pct}% ida y vuelta${
       d.tick ? " · precios redondeados al tick de " + d.tick : ""}<br><br>
     El RR que figura puede quedar abajo del que pediste: al llevar los precios al
     tick del par, el stop se redondea alejandose de la entrada y el objetivo

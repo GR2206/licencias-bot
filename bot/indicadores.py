@@ -56,6 +56,34 @@ def desde_klines(klines) -> list:
     return velas
 
 
+def vwap_diario(velas):
+    """VWAP que reinicia a las 00:00 UTC.
+
+    Precio tipico (maximo + minimo + cierre) / 3, acumulado por volumen dentro
+    del dia. Sin volumen el dia no tiene valor y esa vela queda en None: no se
+    inventa un VWAP para no filtrar zonas con un numero falso. El ultimo valor
+    es el de la ultima vela cerrada.
+    """
+    salida = [None] * len(velas)
+    dia = None
+    cum_pv = 0.0
+    cum_v = 0.0
+    for i, v in enumerate(velas):
+        fecha = v.tiempo // 86_400_000
+        if fecha != dia:
+            dia = fecha
+            cum_pv = 0.0
+            cum_v = 0.0
+        vol = v.volumen or 0.0
+        if vol > 0:
+            tipico = (v.maximo + v.minimo + v.cierre) / 3.0
+            cum_pv += tipico * vol
+            cum_v += vol
+        if cum_v > 0:
+            salida[i] = cum_pv / cum_v
+    return salida
+
+
 def ema(valores, periodo):
     """EMA con el mismo arranque que Pine: SMA de las primeras `periodo` velas."""
     salida = [None] * len(valores)
