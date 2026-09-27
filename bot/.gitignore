@@ -1,5 +1,7 @@
 config.env
 estado.json
 bot.log
+bitacora.json
+bitacora.json.tmp
 __pycache__/
 *.pyc

@@ -9,6 +9,8 @@ Abajo sale la entrada como orden limite, el stop, el objetivo, y el contexto de
 H4 y H1 para saber si va a favor o contra la tendencia mayor.
 
 No manda ordenes. Calcula y te dice donde poner los precios; las cargas vos.
+Cada trade que sale queda en la bitacora de la misma pagina: se ve ahi y se
+baja un CSV. El archivo vive al lado de mesa.py, en bitacora.json.
 Esa separacion es a proposito: mientras no haya una medicion que diga que esto
 le gana al azar, que un boton pueda mandar una orden sola no es una comodidad,
 es una forma de perder plata rapido.
@@ -19,6 +21,8 @@ vinieron las velas: futuros 0.10% ida y vuelta, spot 0.20%. Si pedis futuros y
 Binance bloquea tu region, cae a spot y te lo dice arriba, porque con el doble
 de comision el piso del stop se duplica y el trade puede dejar de cerrar.
 """
+import csv
+import io
 import json
 import os
 import sys
@@ -30,16 +34,274 @@ from urllib.parse import parse_qs, urlparse
 
 import zonas
 
-# Diez por defecto, ordenados de mas a menos liquido. La liquidez no es un
-# detalle: en un par flaco el spread y el slippage se comen el margen que la
-# aritmetica del costo deja, y ese margen ya es chico.
+# Los diez de arriba son los de libro mas profundo. Los dieciocho de abajo
+# salen de la lista del celular: futuros USDT-M con historia real y un precio
+# en el que el tick no se come la zona. Quedaron afuera los de precio
+# microscopico y los de libro flaco (BRISE, WIN, XEC, MBL, SLP, SHIB, PEPE,
+# RSR, C98, TLM): ahi el spread se come el piso del stop antes de que el
+# analisis diga nada.
 POR_DEFECTO = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
-               "ADAUSDT", "DOGEUSDT", "AVAXUSDT", "LINKUSDT", "CHZUSDT"]
+               "ADAUSDT", "DOGEUSDT", "AVAXUSDT", "LINKUSDT", "CHZUSDT",
+               "LTCUSDT", "TRXUSDT", "DOTUSDT", "NEARUSDT", "ATOMUSDT",
+               "UNIUSDT", "AAVEUSDT", "FILUSDT", "OPUSDT", "ARBUSDT",
+               "ETCUSDT", "XLMUSDT", "ICPUSDT", "FETUSDT", "RUNEUSDT",
+               "ARUSDT", "GRTUSDT", "DYDXUSDT"]
 TFS = ["5m", "15m", "30m", "1h", "4h"]
+
+# Cuantas velas se deja puesta la orden limite. En 15m son 6 horas. Pasado
+# eso, si el precio no toco la entrada, el trade vencio: no es una perdida,
+# es una orden que no se lleno.
+VIGENCIA_VELAS = 24
+BITACORA = os.environ.get(
+    "MESA_BITACORA",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "bitacora.json"))
+_candado_bit = threading.Lock()
 
 CACHE_SEG = 45
 _cache = {}
 _candado = threading.Lock()
+
+
+def _cuando(ms):
+    if not ms:
+        return ""
+    return datetime.fromtimestamp(ms / 1000, timezone.utc).strftime("%d/%m %H:%M")
+
+
+def _cargar_bitacora():
+    if not os.path.exists(BITACORA):
+        return []
+    try:
+        with open(BITACORA, encoding="utf-8") as f:
+            datos = json.load(f)
+        return datos if isinstance(datos, list) else []
+    except (OSError, json.JSONDecodeError):
+        return []
+
+
+def _guardar_bitacora(filas):
+    carpeta = os.path.dirname(BITACORA)
+    if carpeta:
+        os.makedirs(carpeta, exist_ok=True)
+    temporal = BITACORA + ".tmp"
+    with open(temporal, "w", encoding="utf-8") as f:
+        json.dump(filas, f, ensure_ascii=False, indent=2)
+    os.replace(temporal, BITACORA)
+
+
+def _toca_entrada(largo, vela, entrada):
+    return vela.minimo <= entrada if largo else vela.maximo >= entrada
+
+
+def _toque_salida(largo, vela, stop, objetivo):
+    """SL gana si la misma vela toca el stop y el objetivo: adentro de la vela
+    no se sabe el orden, y contar el objetivo ahi fabrica un acierto."""
+    if largo:
+        sl = vela.minimo <= stop
+        tp = vela.maximo >= objetivo
+    else:
+        sl = vela.maximo >= stop
+        tp = vela.minimo <= objetivo
+    if sl:
+        return "sl"
+    if tp:
+        return "tp"
+    return None
+
+
+def _cierre_invalida(largo, vela, invalida):
+    if invalida is None:
+        return False
+    return vela.cierre < invalida if largo else vela.cierre > invalida
+
+
+def _fin(estado, vela, minutos, erres, detalle):
+    return {
+        "estado": estado,
+        "r": erres,
+        "detalle": detalle,
+        "resuelto_ms": vela.tiempo + minutos * 60_000,
+        "resuelto": _cuando(vela.tiempo + minutos * 60_000),
+    }
+
+
+def juzgar(fila, velas):
+    """Como salio el trade, mirando solo velas ABIERTAS despues de anotarlo.
+
+    La vela que estaba en curso cuando se apreto CALCULAR no cuenta: el precio
+    de esa vela ya habia pasado antes de que la orden existiera.
+    """
+    minutos = zonas.MINUTOS.get(fila["tf"], 15)
+    anotado = fila["anotado_ms"]
+    if velas and velas[0].tiempo > anotado + minutos * 60_000 * 2:
+        return {
+            "estado": fila.get("estado") or "pendiente",
+            "r": fila.get("r"),
+            "detalle": "faltan velas del momento en que se anoto",
+            "resuelto_ms": None, "resuelto": "",
+        }
+
+    largo = fila["lado"] == "LONG"
+    entrada = float(fila["entrada"])
+    stop = float(fila["stop"])
+    objetivo = float(fila["objetivo"])
+    invalida = fila.get("invalida")
+    invalida = None if invalida is None else float(invalida)
+    riesgo = abs(entrada - stop) or 1e-12
+    posteriores = [v for v in velas if v.tiempo >= anotado]
+    lleno = False
+    vistas = 0
+
+    for v in posteriores:
+        if not lleno:
+            vistas += 1
+            entro = _toca_entrada(largo, v, entrada)
+            if _cierre_invalida(largo, v, invalida) and not entro:
+                return _fin("invalidado", v, minutos, None,
+                            "un cierre paso la invalidacion y la orden no se lleno")
+            if entro:
+                lleno = True
+                salida = _toque_salida(largo, v, stop, objetivo)
+                if salida == "sl":
+                    return _fin("sl", v, minutos, -1.0,
+                                "el precio lleno la orden y toco el stop")
+                if salida == "tp":
+                    return _fin("tp", v, minutos, fila.get("rr_real"),
+                                "el precio llego al objetivo")
+                if _cierre_invalida(largo, v, invalida):
+                    movido = ((v.cierre - entrada) if largo
+                              else (entrada - v.cierre))
+                    return _fin("invalidado", v, minutos, round(movido / riesgo, 3),
+                                "la orden se lleno y el cierre de esa vela "
+                                "invalido la zona")
+                continue
+            if vistas >= VIGENCIA_VELAS:
+                return _fin("vencido", v, minutos, None,
+                            f"pasaron {VIGENCIA_VELAS} velas de {fila['tf']} "
+                            f"y el limite no se lleno")
+        else:
+            salida = _toque_salida(largo, v, stop, objetivo)
+            if salida == "sl":
+                return _fin("sl", v, minutos, -1.0, "se fue al stop")
+            if salida == "tp":
+                return _fin("tp", v, minutos, fila.get("rr_real"),
+                            "llego al objetivo")
+            if _cierre_invalida(largo, v, invalida):
+                movido = (v.cierre - entrada) if largo else (entrada - v.cierre)
+                return _fin("invalidado", v, minutos, round(movido / riesgo, 3),
+                            "el cierre paso la invalidacion con la posicion abierta")
+
+    if lleno:
+        return {"estado": "en_curso", "r": None, "resuelto_ms": None,
+                "resuelto": "",
+                "detalle": "la orden se lleno y el trade sigue abierto"}
+    return {"estado": "pendiente", "r": None, "resuelto_ms": None,
+            "resuelto": "",
+            "detalle": "esperando que el precio toque la entrada"}
+
+
+def _vista(filas):
+    orden = sorted(filas, key=lambda f: f.get("anotado_ms") or 0, reverse=True)
+    cerrados = [f for f in orden if f.get("r") is not None]
+    tp = sum(1 for f in orden if f.get("estado") == "tp")
+    sl = sum(1 for f in orden if f.get("estado") == "sl")
+    return {
+        "filas": orden,
+        "resumen": {
+            "n": len(orden),
+            "tp": tp,
+            "sl": sl,
+            "en_curso": sum(1 for f in orden if f.get("estado") == "en_curso"),
+            "pendiente": sum(1 for f in orden if f.get("estado") == "pendiente"),
+            "invalidado": sum(1 for f in orden if f.get("estado") == "invalidado"),
+            "vencido": sum(1 for f in orden if f.get("estado") == "vencido"),
+            "r_medio": (round(sum(f["r"] for f in cerrados) / len(cerrados), 3)
+                        if cerrados else None),
+        },
+    }
+
+
+def anotar(analisis):
+    """Guarda el trade recomendado. El mismo setup no se anota dos veces."""
+    r = analisis.get("recomendacion")
+    if not r or r.get("nacio_ms") is None:
+        return
+    ident = (f"{analisis['simbolo']}|{analisis['tf']}|{r['nacio_ms']}|"
+             f"{r['lado']}|{r['entrada']}")
+    ahora = int(time.time() * 1000)
+    fila = {
+        "id": ident,
+        "anotado_ms": ahora,
+        "anotado": _cuando(ahora),
+        "simbolo": analisis["simbolo"],
+        "tf": analisis["tf"],
+        "mercado": analisis.get("mercado") or "futuros",
+        "lado": r["lado"],
+        "accion": r["accion"],
+        "zona_tipo": r["zona_tipo"],
+        "entrada": r["entrada"],
+        "stop": r["stop"],
+        "objetivo": r["objetivo"],
+        "invalida": r["invalida"],
+        "riesgo_pct": r["riesgo_pct"],
+        "rr_real": r["rr_real"],
+        "costo_r": r["costo_r"],
+        "precio_al_anotar": analisis.get("precio"),
+        "decimales": analisis.get("decimales", 2),
+        "nacio": r.get("nacio"),
+        "nacio_ms": r["nacio_ms"],
+        "estado": "pendiente",
+        "r": None,
+        "detalle": "recien anotado, esperando el precio",
+        "resuelto_ms": None,
+        "resuelto": "",
+    }
+    with _candado_bit:
+        filas = _cargar_bitacora()
+        if any(x.get("id") == ident for x in filas):
+            return
+        filas.append(fila)
+        _guardar_bitacora(filas)
+
+
+def actualizar_bitacora():
+    """Recorre las ordenes abiertas contra las velas de Binance y anota como salieron."""
+    with _candado_bit:
+        filas = _cargar_bitacora()
+    cambios = {}
+    for f in filas:
+        if f.get("estado") not in ("pendiente", "en_curso"):
+            continue
+        try:
+            minutos = zonas.MINUTOS.get(f["tf"], 15)
+            ahora = int(time.time() * 1000)
+            transcurridas = int((ahora - f["anotado_ms"]) / (minutos * 60_000)) + 5
+            n = max(VIGENCIA_VELAS + 5, min(2000, transcurridas))
+            velas, _ = zonas.bajar(f["simbolo"], f["tf"], n,
+                                   f.get("mercado") or "futuros")
+            cambios[f["id"]] = juzgar(f, velas)
+        except (RuntimeError, OSError, ValueError) as e:
+            cambios[f["id"]] = {"detalle": f"no pude mirar el precio: {e}"}
+    with _candado_bit:
+        filas = _cargar_bitacora()
+        for f in filas:
+            nuevo = cambios.get(f.get("id"))
+            if nuevo and f.get("estado") in ("pendiente", "en_curso"):
+                f.update(nuevo)
+        _guardar_bitacora(filas)
+        return _vista(filas)
+
+
+def bitacora_csv(filas):
+    buffer = io.StringIO()
+    campos = ["anotado", "simbolo", "tf", "lado", "zona_tipo", "entrada",
+              "stop", "objetivo", "invalida", "estado", "r", "detalle",
+              "precio_al_anotar", "resuelto", "nacio"]
+    escritor = csv.DictWriter(buffer, fieldnames=campos, extrasaction="ignore")
+    escritor.writeheader()
+    for f in filas:
+        escritor.writerow(f)
+    return buffer.getvalue()
 
 
 def calcular(simbolo, tf, dias, rr, mercado, costo_max_r):
@@ -123,6 +385,7 @@ def _para_web(a):
             "motivos": z["motivos"],
             "nacio": datetime.fromtimestamp(
                 z["tiempo"] / 1000, timezone.utc).strftime("%d/%m %H:%M"),
+            "nacio_ms": z["tiempo"],
         }
 
     return {
@@ -236,6 +499,23 @@ PAGINA = """<!DOCTYPE html>
         max-height:320px; }
   .pie { color:var(--suave); font-size:11.5px; line-height:1.6; margin-top:16px;
          padding-top:12px; border-top:1px solid var(--borde); }
+  .filaBotones { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:10px; }
+  .filaBotones button, .filaBotones a {
+          display:block; text-align:center; text-decoration:none;
+          background:#21262d; color:var(--texto); border:1px solid var(--borde);
+          border-radius:8px; padding:12px 8px; font-size:14px; font-family:inherit; }
+  .bita { background:#12171e; border:1px solid var(--borde); border-left-width:3px;
+          border-radius:8px; padding:10px 12px; margin-bottom:8px; font-size:12.5px; }
+  .bTop { display:flex; justify-content:space-between; gap:8px; align-items:center;
+          font-weight:600; margin-bottom:4px; }
+  .pill { font-size:11px; font-weight:700; letter-spacing:.4px; padding:2px 7px;
+          border-radius:99px; border:1px solid var(--borde); color:var(--suave); }
+  .pill.tp { color:var(--verde); border-color:var(--verde); }
+  .pill.sl { color:var(--rojo); border-color:var(--rojo); }
+  .pill.en_curso { color:var(--azul); border-color:var(--azul); }
+  .pill.invalidado { color:var(--ambar); border-color:var(--ambar); }
+  .bLONG { border-left-color:var(--verde); }
+  .bSHORT { border-left-color:var(--rojo); }
 </style></head><body>
 <header>
   <h1>Mesa</h1>
@@ -272,6 +552,18 @@ PAGINA = """<!DOCTYPE html>
     <button id="calcular">CALCULAR</button>
   </div>
   <div id="salida"></div>
+  <div class="panel" id="bitacora">
+    <h3 style="margin-top:0">Bitácora</h3>
+    <div class="zDet" style="margin-bottom:8px">Cada CALCULAR con trade queda
+      anotado aca. Actualizar mira las velas de despues y marca si llego al
+      objetivo, al stop, se invalido en el cierre, o la orden vencio sin
+      llenarse. El CSV se baja al celular.</div>
+    <div id="bitacoraCuerpo" class="estado">cargando…</div>
+    <div class="filaBotones">
+      <button id="actualizarBit" type="button">actualizar resultados</button>
+      <a id="bajarCsv" href="api/bitacora.csv">descargar CSV</a>
+    </div>
+  </div>
 </main>
 <script>
 const $ = (s) => document.querySelector(s);
@@ -313,6 +605,7 @@ async function calcular() {
     const d = await (await fetch("api/calcular?" + p)).json();
     $("#salida").innerHTML = d.error
       ? `<div class="panel nota nRojo">${esc(d.error)}</div>` : pintar(d);
+    if (!d.error) cargarBitacora(false);
   } catch (e) {
     $("#salida").innerHTML =
       `<div class="panel nota nRojo">no pude calcular: ${esc(e.message)}</div>`;
@@ -441,8 +734,59 @@ function copiar() {
     () => alert("No pude copiar solo. Marcalo a mano."));
 }
 
+const PILLS = {pendiente:"pendiente", en_curso:"abierta", tp:"TP",
+               sl:"SL", invalidado:"invalidada", vencido:"vencio"};
+
+function pintarBitacora(d) {
+  const s = d.resumen || {};
+  const rMedio = s.r_medio === null || s.r_medio === undefined
+    ? "" : ` · ${s.r_medio} R por trade cerrado`;
+  let h = `<div class="zDet" style="margin-bottom:8px">${s.n || 0} anotados · `
+    + `${s.tp || 0} al TP · ${s.sl || 0} al SL · ${s.en_curso || 0} abiertas · `
+    + `${s.pendiente || 0} pendientes · ${s.invalidado || 0} invalidadas · `
+    + `${s.vencido || 0} vencidas${rMedio}</div>`;
+  if (!d.filas || !d.filas.length) {
+    h += `<div class="estado">todavia no hay trades. Apreta CALCULAR y el que
+      salga queda aca.</div>`;
+    $("#bitacoraCuerpo").innerHTML = h;
+    return;
+  }
+  h += d.filas.map(f => {
+    const dec = f.decimales || 2;
+    const cuando = f.resuelto ? ` · resuelto ${esc(f.resuelto)} UTC` : "";
+    return `<div class="bita b${esc(f.lado)}">
+      <div class="bTop"><span>${esc(f.simbolo)} ${esc(f.tf)} ${esc(f.lado)}
+        ${esc(f.zona_tipo)}</span>
+        <span class="pill ${esc(f.estado)}">${esc(PILLS[f.estado] || f.estado)}</span></div>
+      <div class="zDet">entrada ${fijo(f.entrada, dec)} · SL ${fijo(f.stop, dec)}
+        · TP ${fijo(f.objetivo, dec)} · invalida ${fijo(f.invalida, dec)}</div>
+      <div class="zDet">anotado ${esc(f.anotado)} UTC${cuando}</div>
+      <div style="margin-top:4px">${esc(f.detalle || "")}</div>
+    </div>`;
+  }).join("");
+  $("#bitacoraCuerpo").innerHTML = h;
+}
+
+async function cargarBitacora(actualizar) {
+  const caja = $("#bitacoraCuerpo");
+  if (actualizar) caja.innerHTML =
+    `<div class="estado">mirando como salieron las ordenes abiertas…</div>`;
+  try {
+    const d = await (await fetch("api/bitacora" + (actualizar ? "?actualizar=1" : ""))).json();
+    if (d.error) {
+      caja.innerHTML = `<div class="nota nRojo">${esc(d.error)}</div>`;
+      return;
+    }
+    pintarBitacora(d);
+  } catch (e) {
+    caja.innerHTML = `<div class="nota nRojo">no pude leer la bitacora: ${esc(e.message)}</div>`;
+  }
+}
+
 $("#calcular").addEventListener("click", calcular);
+$("#actualizarBit").addEventListener("click", () => cargarBitacora(true));
 inicio();
+cargarBitacora(false);
 </script></body></html>
 """
 
@@ -455,10 +799,12 @@ class Manejador(BaseHTTPRequestHandler):
     def log_message(self, formato, *args):
         pass
 
-    def _responder(self, codigo, tipo, cuerpo):
+    def _responder(self, codigo, tipo, cuerpo, extra=None):
         self.send_response(codigo)
         self.send_header("Content-Type", tipo)
         self.send_header("Content-Length", str(len(cuerpo)))
+        for clave, valor in (extra or {}).items():
+            self.send_header(clave, valor)
         self.end_headers()
         self.wfile.write(cuerpo)
 
@@ -498,10 +844,24 @@ class Manejador(BaseHTTPRequestHandler):
                 except ValueError:
                     dias, rr = 3.0, 3.0
                 try:
-                    self._json(calcular(simbolo, tf, dias, rr, mercado,
-                                        self.costo_max_r))
+                    salida = calcular(simbolo, tf, dias, rr, mercado,
+                                      self.costo_max_r)
+                    anotar(salida)
+                    self._json(salida)
                 except RuntimeError as e:
                     self._json({"error": str(e)}, 502)
+            elif ruta == "/api/bitacora":
+                if uno("actualizar") == "1":
+                    self._json(actualizar_bitacora())
+                else:
+                    with _candado_bit:
+                        self._json(_vista(_cargar_bitacora()))
+            elif ruta == "/api/bitacora.csv":
+                vista = actualizar_bitacora()
+                cuerpo = bitacora_csv(vista["filas"]).encode("utf-8")
+                self._responder(200, "text/csv; charset=utf-8", cuerpo, {
+                    "Content-Disposition": "attachment; filename=bitacora.csv",
+                })
             else:
                 self._json({"error": "no existe"}, 404)
         except Exception as e:
@@ -528,6 +888,7 @@ def main():
     print(f"  Abrila en: http://localhost:{puerto}")
     print("  En Termux el navegador del celular llega a localhost sin nada mas.")
     print("  No manda ordenes: calcula y te dice donde poner los precios.")
+    print("  La bitacora se ve en la misma pagina y se baja en CSV.")
     print("=" * 66)
 
     servidor = ThreadingHTTPServer(("0.0.0.0", puerto), Manejador)
