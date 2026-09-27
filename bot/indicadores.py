@@ -143,6 +143,34 @@ def atr(velas, periodo=14):
     return rma(rango_verdadero(velas), periodo)
 
 
+def macd(valores, rapida=12, lenta=26, senal=9):
+    """MACD de Binance: DIF, DEA y el histograma MACD.
+
+    DIF es EMA rapida menos EMA lenta. DEA es la EMA del DIF. El valor que
+    Binance rotula MACD es DIF menos DEA, sin multiplicar por dos.
+    """
+    n = len(valores)
+    dif = [None] * n
+    dea = [None] * n
+    hist = [None] * n
+    ema_rapida = ema(valores, rapida)
+    ema_lenta = ema(valores, lenta)
+    crudo, indices = [], []
+    for i in range(n):
+        if ema_rapida[i] is None or ema_lenta[i] is None:
+            continue
+        dif[i] = ema_rapida[i] - ema_lenta[i]
+        crudo.append(dif[i])
+        indices.append(i)
+    dea_cruda = ema(crudo, senal)
+    for j, i in enumerate(indices):
+        if dea_cruda[j] is None:
+            continue
+        dea[i] = dea_cruda[j]
+        hist[i] = dif[i] - dea[i]
+    return dif, dea, hist
+
+
 def rsi(valores, periodo=14):
     salida = [None] * len(valores)
     if len(valores) <= periodo:

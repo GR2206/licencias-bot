@@ -399,7 +399,58 @@ def sigue_vivo(zona, velas):
     return True
 
 
-def puntaje(zona, velas, precio_actual):
+def lectura_osciladores(velas):
+    """RSI(6) y MACD de la temporalidad del trade, en la ultima vela cerrada."""
+    cierres = [v.cierre for v in velas]
+    rsi_s = ind.rsi(cierres, RSI_TRADE)
+    dif, dea, hist = ind.macd(cierres)
+    return {
+        "rsi": rsi_s[-1] if rsi_s else None,
+        "dif": dif[-1] if dif else None,
+        "dea": dea[-1] if dea else None,
+        "hist": hist[-1] if hist else None,
+    }
+
+
+def valorar_osciladores(direccion, osc):
+    """Cuanto suman RSI y MACD a este lado. Puntos, a favor y en contra.
+
+    Un largo suma si el RSI(6) esta en 50 o mas y si el MACD es positivo.
+    Un corto suma con el RSI en 50 o menos y el MACD negativo. El cero no vota.
+    """
+    if not osc:
+        return 0.0, [], []
+    puntos = 0.0
+    favor, contra = [], []
+    rsi = osc.get("rsi")
+    hist = osc.get("hist")
+    if rsi is not None:
+        texto = f"RSI(6) {rsi:.1f}"
+        a_favor = rsi >= 50 if direccion == 1 else rsi <= 50
+        if rsi == 50:
+            pass
+        elif a_favor:
+            puntos += 2
+            favor.append(texto + " a favor")
+        else:
+            puntos -= 2
+            contra.append(texto + " en contra")
+    if hist is not None and hist != 0:
+        dif, dea = osc.get("dif"), osc.get("dea")
+        texto = f"MACD {hist:+.4g}"
+        if dif is not None and dea is not None:
+            texto += f" (DIF {dif:.4g}, DEA {dea:.4g})"
+        a_favor = hist > 0 if direccion == 1 else hist < 0
+        if a_favor:
+            puntos += 2
+            favor.append(texto + " a favor")
+        else:
+            puntos -= 2
+            contra.append(texto + " en contra")
+    return puntos, favor, contra
+
+
+def puntaje(zona, velas, precio_actual, osc=None):
     """Que tan imponente es la zona. Devuelve (puntos, motivos).
 
     Los pesos no salen de una medicion: son un criterio para ordenar la lista y
@@ -448,6 +499,11 @@ def puntaje(zona, velas, precio_actual):
     if zona["direccion"] == -1 and precio_actual > zona["top"]:
         motivos.append("OJO: el precio esta por ENCIMA de una zona de venta")
         puntos -= 2
+
+    extra, favor, contra = valorar_osciladores(zona["direccion"], osc)
+    puntos += extra
+    motivos.extend(favor)
+    motivos.extend(contra)
 
     return puntos, motivos
 
@@ -529,7 +585,7 @@ def sesgo_de(velas):
         etiqueta, signo = "mixto", 0
     return {"sesgo": etiqueta, "signo": signo, "lecturas": lecturas,
             "ema50": e50, "ema200": e200,
-            "rsi": ind.rsi(cierres, 14)[-1], "precio": precio}
+            "rsi": ind.rsi(cierres, RSI_TRADE)[-1], "precio": precio}
 
 
 def contexto(simbolo, mayores=("4h", "1h"), mercado="futuros"):
@@ -592,7 +648,10 @@ RECORRIDO_AGOTADO = 0.8
 # gatillo.
 MEDIAS = (7, 25, 99, 200)
 MEDIAS_GATILLO = (25, 99, 200)
-VERSION = 13
+VERSION = 20
+# El RSI del grafico de Binance en el celular es 6, no el 14 de los libros.
+# El MACD es 12, 26, 9: DIF, DEA, y MACD = DIF - DEA.
+RSI_TRADE = 6
 
 
 def premio_por_delante(zona, precio):
@@ -746,7 +805,7 @@ def operable(zona, precio, atr=0.0, stop_max_atr=3.0):
     return True, "limite de compra, esperando que el precio baje a la zona"
 
 
-def congruencia(zona, ctx):
+def congruencia(zona, ctx, osc=None):
     """Los tres puntos que tienen que coincidir para que haya un trade.
 
     1. Un movimiento de verdad: order block nacido de una ruptura con al menos
@@ -797,6 +856,12 @@ def congruencia(zona, ctx):
         faltan.append("la zona queda del lado equivocado del VWAP del dia")
     elif zona.get("plan", {}).get("vwap_toca"):
         activos.append("la zona toca el VWAP del dia")
+
+    _, favor, contra = valorar_osciladores(zona["direccion"], osc)
+    if len(contra) >= 2:
+        faltan.append("RSI(6) y el MACD van en contra")
+    else:
+        activos.extend(favor)
     return activos, faltan
 
 
@@ -1003,6 +1068,13 @@ def proponer_gatillo(velas, precio, atr, tf, ctx, rr, costo_pct, costo_max_r,
         zona["operable"], zona["motivo_operable"] = ok, motivo
         if not ok:
             continue
+        osc = lectura_osciladores(velas)
+        extra, a_favor, en_contra = valorar_osciladores(direccion, osc)
+        if len(en_contra) >= 2:
+            continue
+        zona["puntos"] += extra
+        zona["motivos"] = [texto] + a_favor + en_contra
+        zona["confluencia"] = [texto] + a_favor
         p = zona["plan"]
         empate, azar = acierto_para_empatar(rr, p["costo_r"])
         return {
@@ -1015,7 +1087,7 @@ def proponer_gatillo(velas, precio, atr, tf, ctx, rr, costo_pct, costo_max_r,
             "invalida": zona["bot"] if direccion == 1 else zona["top"],
             "contra_tf": [], "favor_tf": favor,
             "contracorriente": False,
-            "confluencia": [texto],
+            "confluencia": [texto] + a_favor,
             "acierto_empate": empate,
             "acierto_azar": azar,
             "gatillo": texto,
@@ -1060,10 +1132,8 @@ def diagnostico(zonas, costo_pct, piso_pct, stop_max_atr, atr_pct, tf):
         lado = "LONG" if z["direccion"] == 1 else "SHORT"
         falta = z.get("falta_confluencia") or ["no junta los tres puntos"]
         return (
-            "Ningun trade junta los tres puntos a la vez: un movimiento que "
-            "rompio estructura, el hueco de ese movimiento todavia abierto, "
-            f"y 4h con 1h del mismo lado. La mas cerca es {z['tipo']} {lado}. "
-            "Falta: " + "; ".join(falta) + ".")
+            f"Ningun trade cierra la valoracion. La mas cerca es {z['tipo']} "
+            f"{lado}. Falta: " + "; ".join(falta) + ".")
 
     gastados = [z for z in zonas if "ya se negocio" in z.get("motivo_operable", "")]
     if gastados and not operables:
@@ -1165,9 +1235,10 @@ def analizar(simbolo, tf="15m", dias=3.0, rr=3.0, costo_max_r=0.15,
 
     tick = tick_de(simbolo, usado)
     vwap = ind.vwap_diario(velas)[-1]
+    osc = lectura_osciladores(velas)
     todas = order_blocks(velas, cfg, desde) + fvgs(velas, desde)
     for z in todas:
-        z["puntos"], z["motivos"] = puntaje(z, velas, precio)
+        z["puntos"], z["motivos"] = puntaje(z, velas, precio, osc)
         z["plan"] = ajustar_al_tick(
             afinar_con_vwap(
                 z, plan(z, atr_final, rr, costo_pct=costo_pct,
@@ -1185,7 +1256,7 @@ def analizar(simbolo, tf="15m", dias=3.0, rr=3.0, costo_max_r=0.15,
     # desaparecer y el panel decia "nada para operar" teniendo un trade.
     ctx = contexto(simbolo, mayores, usado)
     for z in todas:
-        activos, faltan = congruencia(z, ctx)
+        activos, faltan = congruencia(z, ctx, osc)
         z["confluencia"] = activos
         z["falta_confluencia"] = faltan
     rec = recomendar(todas, precio, ctx, rr)
@@ -1212,6 +1283,7 @@ def analizar(simbolo, tf="15m", dias=3.0, rr=3.0, costo_max_r=0.15,
         "piso_stop_pct": piso_pct,
         "precio": precio, "ultimo_cierre": ultimo_cierre,
         "vwap": vwap,
+        "osciladores": osc,
         "atr": atr_final, "atr_pct": atr_pct,
         "decimales": decimales(precio),
         "velas": len(velas), "en_ventana": en_ventana,

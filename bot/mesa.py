@@ -49,7 +49,7 @@ POR_DEFECTO = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
 TFS = ["5m", "15m", "30m", "1h", "4h"]
 # El numero que se ve abajo de la pagina. Si no dice este, el archivo del
 # celular es viejo. Se sube junto con zonas.VERSION.
-VERSION = 19
+VERSION = 20
 
 # Cuantas velas se deja puesta la orden limite. En 15m son 6 horas. Pasado
 # eso, si el precio no toco la entrada, el trade vencio: no es una perdida,
@@ -341,6 +341,17 @@ def calcular(simbolo, tf, dias, rr, mercado, costo_max_r):
     return salida
 
 
+def _osciladores_web(osc):
+    """RSI(6) y MACD de la temporalidad del trade, para mostrarlos en la mesa."""
+    if not osc:
+        return None
+    salida = {}
+    for clave in ("rsi", "dif", "dea", "hist"):
+        valor = osc.get(clave)
+        salida[clave] = None if valor is None else float(valor)
+    return salida
+
+
 def _para_web(a):
     """El diccionario sin las velas crudas, que no sirven en el navegador."""
     d = a["decimales"]
@@ -426,6 +437,7 @@ def _para_web(a):
         "stop_max_atr": a["stop_max_atr"], "tick": a["tick"],
         "precio": pr(a["precio"]), "ultimo_cierre": pr(a["ultimo_cierre"]),
         "vwap": pr(a.get("vwap")),
+        "osciladores": _osciladores_web(a.get("osciladores")),
         "atr": pr(a["atr"]), "atr_pct": round(a["atr_pct"], 2),
         "decimales": d,
         "desde": datetime.fromtimestamp(
@@ -729,6 +741,37 @@ async function buscar() {
   b.disabled = false; c.disabled = false; b.textContent = "CALCULAR TODO";
 }
 
+function lineasValor(motivos) {
+  return (motivos || []).filter(m =>
+    m.indexOf("RSI(6)") === 0 || m.indexOf("MACD") === 0);
+}
+
+function fmtOsc(x) {
+  if (x === null || x === undefined || Number.isNaN(Number(x))) return "—";
+  const n = Number(x);
+  const a = Math.abs(n);
+  if (a >= 100) return n.toFixed(2);
+  if (a >= 1) return n.toFixed(3);
+  return n.toFixed(4);
+}
+
+function notaOsciladores(d) {
+  const o = d.osciladores;
+  if (!o || (o.rsi == null && o.hist == null)) return "";
+  const partes = [];
+  if (o.rsi != null) partes.push(`RSI(6) ${Number(o.rsi).toFixed(1)}`);
+  if (o.hist != null) {
+    let t = `MACD ${fmtOsc(o.hist)}`;
+    if (o.dif != null && o.dea != null)
+      t += ` (DIF ${fmtOsc(o.dif)}, DEA ${fmtOsc(o.dea)})`;
+    partes.push(t);
+  }
+  return `<div class="panel nota nGris"><b>Valoración.</b> ${esc(partes.join(" · "))}
+    en la última vela cerrada de ${esc(d.tf)}. En un largo suman con RSI(6) desde
+    50 y MACD positivo; en un corto, al revés. Cada uno vale 2 puntos. Si los
+    dos van en contra del lado, el trade no sale.</div>`;
+}
+
 function pintar(d) {
   const r = d.recomendacion, dec = d.decimales;
   let h = "";
@@ -774,6 +817,13 @@ function pintar(d) {
         queda ahí y el stop sigue en el borde de la idea.</div>`;
     }
 
+    const valor = lineasValor(r.motivos);
+    if (valor.length) {
+      h += `<div class="nota nGris"><b>Valoración.</b> ${esc(valor.join(" · "))}.
+        RSI(6) y el MACD de ${esc(d.tf)} suman o restan 2 puntos cada uno.
+        Si los dos van en contra, este trade no sale.</div>`;
+    }
+
     if (r.gatillo) {
       h += `<div class="nota nGris"><b>${esc(r.gatillo)}.</b>
         La entrada es el límite en esa media.</div>`;
@@ -802,6 +852,7 @@ function pintar(d) {
   } else {
     h += `<div class="panel nota nAmbar"><b>Ninguna zona operable ahora.</b>
       ${esc(d.diagnostico || "")}</div>`;
+    h += notaOsciladores(d);
   }
 
   h += `<h3>Temporalidad mayor</h3><div class="ctx">` + d.contexto.map(c => {
@@ -811,7 +862,7 @@ function pintar(d) {
     return `<div class="ctxCaja">
       <div><span class="ctxTf">${esc(c.tf)}</span>
         <span class="${c.sesgo}"> ${esc(c.sesgo)}</span>
-        <span class="zDet"> · RSI ${c.rsi}</span></div>
+        <span class="zDet"> · RSI(6) ${c.rsi}</span></div>
       <div class="zDet" style="margin-top:4px">${esc(c.lecturas.join(" · "))}</div>
       <div class="zDet" style="margin-top:6px">rango 24h ${fijo(c.bajo_24h, dec)}
         — ${fijo(c.alto_24h, dec)} · precio en el ${c.pos_rango}%</div>
@@ -838,6 +889,9 @@ function pintar(d) {
           ? "✓ " + esc(z.confluencia.join(" · "))
           : ((z.falta_confluencia && z.falta_confluencia.length)
              ? "· " + esc(z.falta_confluencia.join("; ")) : "")}</div>
+      ${lineasValor(z.motivos).length
+        ? `<div class="zDet" style="margin-top:4px">${esc(lineasValor(z.motivos).join(" · "))}</div>`
+        : ""}
     </div>`).join("");
 
   h += `<details><summary>Ver el Pine para dibujarlo en TradingView</summary>
