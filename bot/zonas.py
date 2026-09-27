@@ -533,10 +533,32 @@ def acierto_para_empatar(rr, costo_r):
     return (1.0 + costo_r) / (1.0 + rr) * 100, azar
 
 
+# Premio que tiene que quedar POR DELANTE del precio de ahora, medido en R de
+# esa misma operacion. Con menos de 1R el objetivo ya esta en el precio actual
+# o atras, y la orden limita pide un retroceso para volver a un nivel que el
+# mercado ya negocio.
+PREMIO_MIN_R = 1.0
+
+
+def premio_por_delante(zona, precio):
+    """Cuantos R quedan entre el precio de ahora y el objetivo.
+
+    Positivo: el objetivo todavia esta adelante. Cero o negativo: el mercado ya
+    llego ahi, y entrar en el retroceso es cobrar un premio entregado.
+    """
+    p = zona["plan"]
+    riesgo = abs(p["entrada"] - p["stop"])
+    if riesgo <= 0 or not precio:
+        return 0.0
+    if zona["direccion"] == 1:
+        return (p["objetivo"] - precio) / riesgo
+    return (precio - p["objetivo"]) / riesgo
+
+
 def operable(zona, precio, atr=0.0, stop_max_atr=3.0):
     """Si la zona todavia se puede tomar con una orden limite, y por que no.
 
-    Tres filtros, y los tres son por algo que se puede explicar:
+    Cinco filtros, y los cinco son por algo que se puede explicar:
 
     1. La zona no puede estar ya atravesada.
     2. Una zona de venta se toma con un limite ARRIBA del precio y una de compra
@@ -546,9 +568,14 @@ def operable(zona, precio, atr=0.0, stop_max_atr=3.0):
     3. El stop no puede pasar de stop_max_atr veces el ATR. Una zona muy ancha
        da un stop enorme, y con RR 1:3 el objetivo se va tan lejos que deja de
        ser una operacion de esta temporalidad: es un swing de varios dias
-       disfrazado de entrada de 15 minutos. El riesgo por operacion sigue
-       controlado, pero el tiempo de exposicion y la lectura no son las que se
-       pidieron.
+       disfrazado de entrada de 15 minutos.
+    4. El stop de la zona tiene que cubrir la comision sin moverlo. Si hay que
+       ensancharlo hasta el piso de costo, la salida queda en un precio que la
+       zona no invalida: el nivel de la idea y el que saca de la operacion
+       dejan de ser el mismo. Eso se descarta, no se opera con el stop corrido.
+    5. Entre el precio de ahora y el objetivo tiene que quedar al menos 1R.
+       Si no, el TP ya esta donde el mercado cotiza y la orden pide un
+       retroceso para volver ahi.
     """
     entrada = zona["plan"]["entrada"]
     if not zona["vivo"]:
@@ -560,29 +587,38 @@ def operable(zona, precio, atr=0.0, stop_max_atr=3.0):
             return False, (f"stop de {veces:.1f} ATR: la zona es demasiado ancha "
                            f"para esta temporalidad")
 
-    if zona["direccion"] == -1:
-        if entrada <= precio:
-            return False, "el precio ya esta debajo de la entrada: el corto se fue"
-        return True, "limite de venta, esperando que el precio suba a la zona"
-    if entrada >= precio:
+    if zona["direccion"] == -1 and entrada <= precio:
+        return False, "el precio ya esta debajo de la entrada: el corto se fue"
+    if zona["direccion"] == 1 and entrada >= precio:
         return False, "el precio ya esta arriba de la entrada: el largo se fue"
+
+    if zona["plan"].get("ensanchado"):
+        return False, ("el stop de la zona no cubre la comision: ensancharlo "
+                       "lo saca del nivel que invalida la idea")
+
+    premio = premio_por_delante(zona, precio)
+    if premio < PREMIO_MIN_R:
+        return False, (f"el objetivo ya quedo atras: desde aca quedan "
+                       f"{premio:.1f}R y hacen falta {PREMIO_MIN_R:.0f}R "
+                       f"por delante")
+
+    if zona["direccion"] == -1:
+        return True, "limite de venta, esperando que el precio suba a la zona"
     return True, "limite de compra, esperando que el precio baje a la zona"
 
 
 def recomendar(zonas, precio, ctx, rr):
     """Elige la zona que se puede operar ahora y explica la eleccion.
 
-    Prioriza, en este orden: que el stop de la zona aguante el costo sin que
-    haya que ensancharlo, el puntaje, y que sea reciente. Un stop ensanchado
-    significa que el nivel que define la idea y el nivel que paga las cuentas no
-    son el mismo, y ahi la zona dejo de ser el motivo de la operacion.
+    Prioriza el puntaje y, a igual puntaje, la zona mas reciente. Una zona con
+    el stop ensanchado ni siquiera llega aca: operable() la descarta, porque
+    ese stop ya no es el nivel que invalida la idea.
     """
     candidatas = [(z, z["motivo_operable"]) for z in zonas if z["operable"]]
     if not candidatas:
         return None
 
     candidatas.sort(key=lambda par: (
-        par[0]["plan"]["ensanchado"],
         -par[0]["puntos"],
         -par[0]["indice_origen"],
     ))
@@ -636,6 +672,26 @@ def diagnostico(zonas, costo_pct, piso_pct, stop_max_atr, atr_pct, tf):
     if all(not z["vivo"] for z in zonas):
         return ("Todas las zonas de la ventana ya fueron atravesadas. No queda "
                 "ningun nivel sin usar: esperar a que se forme uno nuevo.")
+
+    sin_piso = [z for z in zonas if "no cubre la comision" in z["motivo_operable"]]
+    sin_premio = [z for z in zonas if "quedo atras" in z["motivo_operable"]]
+    if sin_piso or sin_premio:
+        partes = []
+        if sin_piso:
+            partes.append(
+                f"{len(sin_piso)} zona{'s' if len(sin_piso) != 1 else ''} "
+                f"{'piden' if len(sin_piso) != 1 else 'pide'} un stop mas corto "
+                f"que el piso de la comision ({piso_pct:.2f}%). Correr ese stop "
+                f"hasta el piso lo deja en un precio que la zona no invalida, "
+                f"asi que se descartan en lugar de operarse con la salida corrida.")
+        if sin_premio:
+            partes.append(
+                f"{len(sin_premio)} zona{'s' if len(sin_premio) != 1 else ''} "
+                f"{'apuntan' if len(sin_premio) != 1 else 'apunta'} a un objetivo "
+                f"que el precio ya alcanzo: entre el precio de ahora y el TP "
+                f"queda menos de {PREMIO_MIN_R:.0f}R. Esa entrada pide un "
+                f"retroceso para cobrar un premio que el mercado ya entrego.")
+        return " ".join(partes)
 
     pasadas = [z for z in zonas if "se fue" in z["motivo_operable"]]
     if pasadas:
