@@ -581,7 +581,10 @@ PREMIO_MIN_R = 1.0
 # movimiento. 1.5 ATR en M15 de RUNE, con el precio a 2.2 ATR de la zona,
 # era exactamente el caso de "la senal salio tarde".
 DISTANCIA_MAX_ATR = 1.5
-VERSION = 9
+# Si el precio ya recorrio esta fraccion del objetivo 1:3 despues de nacer la
+# zona, el premio se negoceo sin la entrada. Volver ahi es entrar tarde.
+RECORRIDO_AGOTADO = 0.8
+VERSION = 10
 
 
 def premio_por_delante(zona, precio):
@@ -710,6 +713,10 @@ def operable(zona, precio, atr=0.0, stop_max_atr=3.0):
         return False, ("el stop de la zona no cubre la comision: ensancharlo "
                        "lo saca del nivel que invalida la idea")
 
+    if zona["plan"].get("agotado"):
+        return False, ("el movimiento ya se negocio: el precio llego al "
+                       "objetivo antes de que la entrada se llene")
+
     premio = premio_por_delante(zona, precio)
     if premio < PREMIO_MIN_R:
         return False, (f"el objetivo ya quedo atras: desde aca quedan "
@@ -832,6 +839,27 @@ def recomendar(zonas, precio, ctx, rr):
     }
 
 
+def marcar_agotado(zona, velas):
+    """Anota cuanto del objetivo ya se negoceo despues de que nacio la zona.
+
+    El premio que importa no es el que queda por delante del precio de ahora:
+    es el que el mercado ya toco. RUNE llego a 0.845, que era el TP, y recien
+    despues bajo a llenar el limite. Esa entrada es la reversa, no el retroceso.
+    """
+    pl = zona["plan"]
+    riesgo = abs(pl["entrada"] - pl["stop"])
+    premio = abs(pl["objetivo"] - pl["entrada"])
+    desde = zona.get("indice_ruptura", zona.get("indice_origen", 0)) + 1
+    if zona["direccion"] == 1:
+        extremo = max((v.maximo for v in velas[desde:]), default=pl["entrada"])
+        viajado = max(0.0, extremo - pl["entrada"])
+    else:
+        extremo = min((v.minimo for v in velas[desde:]), default=pl["entrada"])
+        viajado = max(0.0, pl["entrada"] - extremo)
+    pl["recorrido_r"] = viajado / riesgo if riesgo else 0.0
+    pl["agotado"] = bool(premio) and viajado / premio >= RECORRIDO_AGOTADO
+
+
 def diagnostico(zonas, costo_pct, piso_pct, stop_max_atr, atr_pct, tf):
     """Por que no hay nada para operar. Sin esto, el panel solo dice "nada" y
     deja al que mira sin saber si el problema es el mercado, la ventana o el
@@ -852,6 +880,13 @@ def diagnostico(zonas, costo_pct, piso_pct, stop_max_atr, atr_pct, tf):
             "rompio estructura, el hueco de ese movimiento todavia abierto, "
             f"y 4h con 1h del mismo lado. La mas cerca es {z['tipo']} {lado}. "
             "Falta: " + "; ".join(falta) + ".")
+
+    gastados = [z for z in zonas if "ya se negocio" in z.get("motivo_operable", "")]
+    if gastados and not operables:
+        return (
+            "El movimiento ya se negocio. El precio llego al objetivo antes de "
+            "llenar la entrada, y volver a esa zona es entrar tarde: el premio "
+            "ya se entrego. No se deja el limite puesto esperando la vuelta.")
 
     lejos = [z for z in zonas if "impulso ya se fue" in z.get("motivo_operable", "")]
     if lejos and not operables:
@@ -955,6 +990,7 @@ def analizar(simbolo, tf="15m", dias=3.0, rr=3.0, costo_max_r=0.15,
                         costo_max_r=costo_max_r),
                 vwap, atr_final, precio, rr, costo_pct, costo_max_r),
             z["direccion"], tick, costo_pct)
+        marcar_agotado(z, velas)
         z["vivo"] = sigue_vivo(z, velas)
         z["operable"], z["motivo_operable"] = operable(z, precio, atr_final,
                                                        stop_max_atr)

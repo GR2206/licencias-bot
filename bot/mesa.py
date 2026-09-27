@@ -49,7 +49,7 @@ POR_DEFECTO = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
 TFS = ["5m", "15m", "30m", "1h", "4h"]
 # El numero que se ve abajo de la pagina. Si no dice este, el archivo del
 # celular es viejo. Se sube junto con zonas.VERSION.
-VERSION = 9
+VERSION = 10
 
 # Cuantas velas se deja puesta la orden limite. En 15m son 6 horas. Pasado
 # eso, si el precio no toco la entrada, el trade vencio: no es una perdida,
@@ -159,6 +159,11 @@ def juzgar(fila, velas):
         if not lleno:
             vistas += 1
             entro = _toca_entrada(largo, v, entrada)
+            toco_objetivo = v.maximo >= objetivo if largo else v.minimo <= objetivo
+            if toco_objetivo and not entro:
+                return _fin("agotado", v, minutos, None,
+                            "el objetivo se negocio sin llenar la orden: "
+                            "cancela el limite")
             if _cierre_invalida(largo, v, invalida) and not entro:
                 return _fin("invalidado", v, minutos, None,
                             "un cierre paso la invalidacion y la orden no se lleno")
@@ -217,6 +222,7 @@ def _vista(filas):
             "en_curso": sum(1 for f in orden if f.get("estado") == "en_curso"),
             "pendiente": sum(1 for f in orden if f.get("estado") == "pendiente"),
             "invalidado": sum(1 for f in orden if f.get("estado") == "invalidado"),
+            "agotado": sum(1 for f in orden if f.get("estado") == "agotado"),
             "vencido": sum(1 for f in orden if f.get("estado") == "vencido"),
             "r_medio": (round(sum(f["r"] for f in cerrados) / len(cerrados), 3)
                         if cerrados else None),
@@ -525,7 +531,7 @@ PAGINA = """<!DOCTYPE html>
   .pill.tp { color:var(--verde); border-color:var(--verde); }
   .pill.sl { color:var(--rojo); border-color:var(--rojo); }
   .pill.en_curso { color:var(--azul); border-color:var(--azul); }
-  .pill.invalidado { color:var(--ambar); border-color:var(--ambar); }
+  .pill.invalidado, .pill.agotado { color:var(--ambar); border-color:var(--ambar); }
   .bLONG { border-left-color:var(--verde); }
   .bSHORT { border-left-color:var(--rojo); }
 </style></head><body>
@@ -771,7 +777,8 @@ function copiar() {
 }
 
 const PILLS = {pendiente:"pendiente", en_curso:"abierta", tp:"TP",
-               sl:"SL", invalidado:"invalidada", vencido:"vencio"};
+               sl:"SL", invalidado:"invalidada", agotado:"agotada",
+               vencido:"vencio"};
 
 function pintarBitacora(d) {
   const s = d.resumen || {};
@@ -780,7 +787,7 @@ function pintarBitacora(d) {
   let h = `<div class="zDet" style="margin-bottom:8px">${s.n || 0} anotados · `
     + `${s.tp || 0} al TP · ${s.sl || 0} al SL · ${s.en_curso || 0} abiertas · `
     + `${s.pendiente || 0} pendientes · ${s.invalidado || 0} invalidadas · `
-    + `${s.vencido || 0} vencidas${rMedio}</div>`;
+    + `${s.agotado || 0} agotadas · ${s.vencido || 0} vencidas${rMedio}</div>`;
   if (!d.filas || !d.filas.length) {
     h += `<div class="estado">todavia no hay trades. Apreta CALCULAR y el que
       salga queda aca.</div>`;
