@@ -1,0 +1,609 @@
+<!DOCTYPE html>
+<html lang="es"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mesa</title>
+<script src="https://cdn.jsdelivr.net/pyodide/v0.27.7/full/pyodide.js"></script>
+<style>
+  :root { --fondo:#0d1117; --caja:#161b22; --borde:#30363d; --texto:#e6edf3;
+          --suave:#8b949e; --verde:#3fb950; --rojo:#f85149; --ambar:#d29922;
+          --azul:#58a6ff; }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  body { margin:0; background:var(--fondo); color:var(--texto); font-size:15px;
+         font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
+  header { padding:14px 16px; border-bottom:1px solid var(--borde); }
+  h1 { margin:0; font-size:17px; letter-spacing:.3px; }
+  .sub { color:var(--suave); font-size:12px; margin-top:3px; }
+  main { padding:12px; max-width:720px; margin:0 auto; }
+  .panel { background:var(--caja); border:1px solid var(--borde);
+           border-radius:12px; padding:14px; margin-bottom:12px; }
+  label { display:block; font-size:12px; color:var(--suave); margin-bottom:5px;
+          text-transform:uppercase; letter-spacing:.5px; }
+  select, input { width:100%; background:#0d1117; color:var(--texto);
+          border:1px solid var(--borde); border-radius:8px; padding:11px 10px;
+          font-size:16px; font-family:inherit; }
+  .rejilla { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  .rejilla3 { display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; }
+  .campo { margin-bottom:12px; }
+  #calcular { width:100%; margin-top:2px; background:var(--azul); color:#04121f;
+          border:0; border-radius:10px; padding:15px; font-size:16px;
+          font-weight:700; letter-spacing:.6px; cursor:pointer; }
+  #calcular:disabled { background:#21262d; color:var(--suave); }
+  #calcular:active { filter:brightness(.9); }
+  #buscar { width:100%; margin-top:8px; background:transparent; color:var(--azul);
+          border:1px solid var(--azul); border-radius:10px; padding:13px;
+          font-size:15px; font-weight:700; letter-spacing:.6px; cursor:pointer; }
+  #buscar:disabled { color:var(--suave); border-color:var(--borde); }
+  .giro { width:28px; height:28px; margin:4px auto 10px; border-radius:50%;
+          border:3px solid var(--borde); border-top-color:var(--azul);
+          animation:girar .8s linear infinite; }
+  @keyframes girar { to { transform:rotate(360deg); } }
+  .filaTrade { width:100%; display:flex; justify-content:space-between;
+          align-items:center; background:transparent; color:var(--texto);
+          border:0; border-bottom:1px solid var(--borde); padding:13px 2px;
+          font-size:16px; font-family:inherit; cursor:pointer; }
+  .filaTrade:active { background:#21262d; }
+  .ladoL { color:var(--verde); font-weight:700; }
+  .ladoS { color:var(--rojo); font-weight:700; }
+  .pasando { font-size:18px; font-weight:700; letter-spacing:.4px;
+             color:var(--texto); }
+  .estado { text-align:center; color:var(--suave); font-size:13px; padding:18px; }
+  .trade { border-radius:12px; padding:0; overflow:hidden; margin-bottom:12px;
+           border:1px solid var(--borde); }
+  .trade h2 { margin:0; padding:13px 14px; font-size:16px; letter-spacing:.5px; }
+  .tLONG h2 { background:#0d2818; color:var(--verde);
+              border-bottom:1px solid var(--verde); }
+  .tSHORT h2 { background:#2d1214; color:var(--rojo);
+               border-bottom:1px solid var(--rojo); }
+  .niveles { display:grid; grid-template-columns:1fr 1fr 1fr; gap:1px;
+             background:var(--borde); }
+  .nivel { background:var(--caja); padding:12px 8px; text-align:center; }
+  .nivel .et { font-size:10px; color:var(--suave); text-transform:uppercase;
+               letter-spacing:.7px; }
+  .nivel .vl { font-size:17px; font-weight:650; margin-top:4px;
+               font-variant-numeric:tabular-nums; }
+  .nivel.sl .vl { color:var(--rojo); } .nivel.tp .vl { color:var(--verde); }
+  .cuerpo { background:var(--caja); padding:12px 14px; font-size:13px;
+            line-height:1.65; }
+  .cuerpo table { width:100%; border-collapse:collapse;
+                  font-variant-numeric:tabular-nums; }
+  .cuerpo td { padding:4px 0; border-top:1px solid #21262d; }
+  .cuerpo td:first-child { color:var(--suave); }
+  .cuerpo td:last-child { text-align:right; }
+  .nota { margin-top:10px; padding:10px; border-radius:8px; font-size:12.5px;
+          line-height:1.55; }
+  .nAmbar { background:#2d2000; border:1px solid var(--ambar); color:#f0d68a; }
+  .nRojo { background:#2d1214; border:1px solid var(--rojo); color:#ffb4ab; }
+  .nGris { background:#12171e; border:1px solid var(--borde);
+           color:var(--suave); }
+  .ctx { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  .ctxCaja { background:#12171e; border:1px solid var(--borde);
+             border-radius:8px; padding:10px; font-size:12px; }
+  .ctxTf { font-weight:700; font-size:14px; }
+  .alcista { color:var(--verde); } .bajista { color:var(--rojo); }
+  .mixto { color:var(--ambar); }
+  .barra { height:4px; background:#21262d; border-radius:2px; margin-top:7px;
+           position:relative; }
+  .barra i { position:absolute; top:-2px; width:3px; height:8px;
+             background:var(--texto); border-radius:1px; }
+  h3 { font-size:12px; color:var(--suave); text-transform:uppercase;
+       letter-spacing:.6px; margin:16px 0 8px; }
+  .zona { background:var(--caja); border:1px solid var(--borde);
+          border-left-width:3px; border-radius:8px; padding:10px 12px;
+          margin-bottom:8px; font-size:12.5px; }
+  .zLONG { border-left-color:var(--verde); }
+  .zSHORT { border-left-color:var(--rojo); }
+  .zona.muerta { opacity:.5; }
+  .zTitulo { display:flex; justify-content:space-between; gap:8px;
+             font-weight:600; margin-bottom:4px; }
+  .pts { color:var(--suave); font-weight:400; }
+  .zDet { color:var(--suave); font-variant-numeric:tabular-nums; }
+  details { margin-top:12px; }
+  summary { cursor:pointer; color:var(--azul); font-size:13px; padding:6px 0; }
+  pre { background:#0d1117; border:1px solid var(--borde); border-radius:8px;
+        padding:10px; overflow-x:auto; font-size:10.5px; line-height:1.45;
+        max-height:320px; }
+  .pie { color:var(--suave); font-size:11.5px; line-height:1.6; margin-top:16px;
+         padding-top:12px; border-top:1px solid var(--borde); }
+  .filaBotones { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:10px; }
+  .filaBotones button, .filaBotones a {
+          display:block; text-align:center; text-decoration:none;
+          background:#21262d; color:var(--texto); border:1px solid var(--borde);
+          border-radius:8px; padding:12px 8px; font-size:14px; font-family:inherit; }
+  .bita { background:#12171e; border:1px solid var(--borde); border-left-width:3px;
+          border-radius:8px; padding:10px 12px; margin-bottom:8px; font-size:12.5px; }
+  .bTop { display:flex; justify-content:space-between; gap:8px; align-items:center;
+          font-weight:600; margin-bottom:4px; }
+  .pill { font-size:11px; font-weight:700; letter-spacing:.4px; padding:2px 7px;
+          border-radius:99px; border:1px solid var(--borde); color:var(--suave); }
+  .pill.tp { color:var(--verde); border-color:var(--verde); }
+  .pill.sl { color:var(--rojo); border-color:var(--rojo); }
+  .pill.en_curso { color:var(--azul); border-color:var(--azul); }
+  .pill.invalidado, .pill.agotado { color:var(--ambar); border-color:var(--ambar); }
+  .bLONG { border-left-color:var(--verde); }
+  .bSHORT { border-left-color:var(--rojo); }
+</style></head><body>
+<header>
+  <h1>Mesa</h1>
+  <div class="sub">Corre en Chrome, sin Termux. Elegis el activo, calculas, y salen los
+    precios para la orden limite. No manda ordenes.</div>
+</header>
+<main>
+  <div id="motor" class="estado">Cargando la mesa en Chrome…</div>
+  <div class="panel">
+    <div class="campo">
+      <label for="simbolo">Activo</label>
+      <select id="simbolo"></select>
+    </div>
+    <div class="rejilla3">
+      <div class="campo">
+        <label for="tf">Temporalidad</label>
+        <select id="tf"></select>
+      </div>
+      <div class="campo">
+        <label for="dias">Ventana (dias)</label>
+        <input id="dias" type="number" value="3" min="1" max="30" step="1">
+      </div>
+      <div class="campo">
+        <label for="rr">Objetivo (1:R)</label>
+        <input id="rr" type="number" value="3" min="1" max="10" step="0.5">
+      </div>
+    </div>
+    <div class="campo">
+      <label for="mercado">Mercado</label>
+      <select id="mercado">
+        <option value="futuros">futuros USDT-M (0.10% ida y vuelta)</option>
+        <option value="spot">spot (0.20% ida y vuelta)</option>
+      </select>
+    </div>
+    <button id="calcular">CALCULAR</button>
+    <button id="buscar" type="button">CALCULAR TODO</button>
+    <div id="lista"></div>
+  </div>
+  <div id="salida"></div>
+  <div class="panel" id="bitacora">
+    <h3 style="margin-top:0">Bitácora</h3>
+    <div class="zDet" style="margin-bottom:8px">Cada CALCULAR con trade queda
+      anotado aca. Actualizar mira las velas de despues y marca si llego al
+      objetivo, al stop, se invalido en el cierre, o la orden vencio sin
+      llenarse. El CSV se baja al celular.</div>
+    <div id="bitacoraCuerpo" class="estado">cargando…</div>
+    <div class="filaBotones">
+      <button id="actualizarBit" type="button">actualizar resultados</button>
+      <a id="bajarCsv" href="api/bitacora.csv">descargar CSV</a>
+    </div>
+  </div>
+  <div class="pie" style="text-align:center">versión 17</div>
+</main>
+<script>
+const origFetch = window.fetch.bind(window);
+let pyodide;
+const motorEl = () => document.getElementById("motor");
+
+const listo = (async () => {
+  try {
+    pyodide = await loadPyodide({
+      indexURL: "https://cdn.jsdelivr.net/pyodide/v0.27.7/full/",
+    });
+    pyodide.FS.mkdirTree("/app");
+    for (const nombre of ["indicadores.py", "estrategia.py", "zonas.py", "mesa.py"]) {
+      const url = new URL("../bot/" + nombre, location.href);
+      const respuesta = await origFetch(url);
+      if (!respuesta.ok) throw new Error("no pude leer " + nombre);
+      pyodide.FS.writeFile("/app/" + nombre, await respuesta.text());
+    }
+    const guardada = localStorage.getItem("mesa-bitacora");
+    if (guardada != null) pyodide.FS.writeFile("/bitacora.json", guardada);
+
+    globalThis.pedirNavegador = (url) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open("GET", url, false);
+      xhr.send(null);
+      if (xhr.status < 200 || xhr.status >= 300) {
+        throw new Error("HTTP " + xhr.status);
+      }
+      return xhr.responseText;
+    };
+
+    await pyodide.runPythonAsync(`
+import os, sys, json, urllib.error
+os.environ["MESA_BITACORA"] = "/bitacora.json"
+sys.path.insert(0, "/app")
+from js import pedirNavegador
+import mesa
+import zonas
+
+def _pedir_nav(url, timeout=30):
+    try:
+        return json.loads(pedirNavegador(url))
+    except Exception as e:
+        raise urllib.error.URLError(str(e))
+
+zonas._pedir = _pedir_nav
+
+def atender_web(path):
+    codigo, tipo, cuerpo, extra = mesa.atender(path)
+    return json.dumps({
+        "codigo": codigo,
+        "tipo": tipo,
+        "cuerpo": cuerpo,
+        "disposicion": (extra or {}).get("Content-Disposition", ""),
+    })
+`);
+    const aviso = motorEl();
+    if (aviso) aviso.remove();
+  } catch (e) {
+    const aviso = motorEl();
+    const texto = (e && e.message) ? e.message : String(e);
+    if (aviso) {
+      aviso.className = "panel nota nRojo";
+      aviso.textContent = "No pude cargar la mesa en Chrome: " + texto;
+    }
+    throw e;
+  }
+})();
+
+function guardarBitacora() {
+  try {
+    const raw = pyodide.FS.readFile("/bitacora.json", {encoding: "utf8"});
+    localStorage.setItem("mesa-bitacora", raw);
+  } catch (e) {}
+}
+
+function restaurarBitacora() {
+  const raw = localStorage.getItem("mesa-bitacora");
+  if (raw == null) return;
+  pyodide.FS.writeFile("/bitacora.json", raw);
+}
+
+let cola = Promise.resolve();
+
+window.fetch = function (input, init) {
+  const url = typeof input === "string" ? input : (input && input.url) || "";
+  if (!String(url).includes("api/")) return origFetch(input, init);
+  const job = cola.then(async () => {
+    await listo;
+    restaurarBitacora();
+    const atender = pyodide.globals.get("atender_web");
+    let bruto = atender(String(url));
+    const texto = typeof bruto === "string" ? bruto : String(bruto);
+    if (bruto && bruto.destroy) bruto.destroy();
+    if (atender.destroy) atender.destroy();
+    const d = JSON.parse(texto);
+    guardarBitacora();
+    const headers = {"Content-Type": d.tipo};
+    if (d.disposicion) headers["Content-Disposition"] = d.disposicion;
+    return new Response(d.cuerpo, {status: d.codigo, headers});
+  });
+  cola = job.then(() => {}, () => {});
+  return job;
+};
+
+document.addEventListener("click", (ev) => {
+  const a = ev.target.closest && ev.target.closest("a");
+  if (!a) return;
+  const href = a.getAttribute("href") || "";
+  if (!href.includes("api/")) return;
+  ev.preventDefault();
+  window.fetch(href).then(async (res) => {
+    const blob = await res.blob();
+    const u = URL.createObjectURL(blob);
+    const tmp = document.createElement("a");
+    tmp.href = u;
+    tmp.download = "bitacora.csv";
+    tmp.click();
+    URL.revokeObjectURL(u);
+  });
+}, true);
+
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s).replace(/[&<>"]/g,
+  c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+let CFG = {simbolos: [], tfs: []};
+
+function fijo(x, d) { return (x === null || x === undefined) ? "—"
+                            : Number(x).toFixed(d); }
+
+async function inicio() {
+  const d = await (await fetch("api/config")).json();
+  CFG = d;
+  $("#simbolo").innerHTML = d.simbolos.map(
+    s => `<option value="${s}">${s}</option>`).join("");
+  $("#tf").innerHTML = d.tfs.map(
+    t => `<option value="${t}"${t === d.tf_def ? " selected" : ""}>${t}</option>`
+  ).join("");
+
+  // El enlace se puede guardar con el activo ya elegido: ?simbolo=CHZUSDT
+  const q = new URLSearchParams(location.search);
+  if (q.get("simbolo")) $("#simbolo").value = q.get("simbolo").toUpperCase();
+  if (q.get("tf")) $("#tf").value = q.get("tf");
+  if (q.get("calcular") !== null) calcular();
+}
+
+async function calcular() {
+  const b = $("#calcular"), t = $("#buscar");
+  b.disabled = true; t.disabled = true; b.textContent = "CALCULANDO…";
+  $("#salida").innerHTML =
+    `<div class="estado">bajando velas de Binance y buscando zonas…</div>`;
+  const p = new URLSearchParams({
+    simbolo: $("#simbolo").value, tf: $("#tf").value,
+    dias: $("#dias").value, rr: $("#rr").value,
+    mercado: $("#mercado").value,
+  });
+  try {
+    const d = await (await fetch("api/calcular?" + p)).json();
+    $("#salida").innerHTML = d.error
+      ? `<div class="panel nota nRojo">${esc(d.error)}</div>` : pintar(d);
+    if (!d.error) cargarBitacora(false);
+  } catch (e) {
+    $("#salida").innerHTML =
+      `<div class="panel nota nRojo">no pude calcular: ${esc(e.message)}</div>`;
+  }
+  b.disabled = false; t.disabled = false; b.textContent = "CALCULAR";
+}
+
+function elegir(simbolo) {
+  const sel = $("#simbolo");
+  if ([...sel.options].some(o => o.value === simbolo)) sel.value = simbolo;
+  sel.scrollIntoView({block: "center"});
+}
+
+function filasHtml(filas) {
+  return filas.map(t =>
+    `<button type="button" class="filaTrade" data-sim="${esc(t.simbolo)}">
+      <span>${esc(t.simbolo)}</span>
+      <span class="${t.lado === "LONG" ? "ladoL" : "ladoS"}">${esc(t.lado)}</span>
+    </button>`).join("");
+}
+
+function engancharFilas() {
+  $("#lista").querySelectorAll(".filaTrade").forEach(el => {
+    el.addEventListener("click", () => elegir(el.dataset.sim));
+  });
+}
+
+async function buscar() {
+  const b = $("#buscar"), c = $("#calcular");
+  const tf = $("#tf").value;
+  const simbolos = CFG.simbolos || [];
+  const encontrados = [];
+  b.disabled = true; c.disabled = true;
+  b.textContent = "REVISANDO…";
+  try {
+    for (let i = 0; i < simbolos.length; i++) {
+      const s = simbolos[i];
+      $("#lista").innerHTML =
+        `<div class="estado"><div class="giro"></div>
+          <div class="pasando">${esc(s)}</div>
+          <div class="zDet">${i + 1} / ${simbolos.length} · ${esc(tf)}</div>
+        </div>` + filasHtml(encontrados);
+      engancharFilas();
+      const p = new URLSearchParams({
+        simbolo: s, tf,
+        dias: $("#dias").value, rr: $("#rr").value,
+        mercado: $("#mercado").value,
+      });
+      const d = await (await fetch("api/buscar?" + p)).json();
+      if (d.error) throw new Error(d.error);
+      if (d.lado) encontrados.push(d);
+    }
+    if (encontrados.length) {
+      $("#lista").innerHTML = filasHtml(encontrados);
+      engancharFilas();
+    } else {
+      $("#lista").innerHTML =
+        `<div class="nota nGris" style="margin-top:12px">Revisé ${simbolos.length} pares en ${esc(tf)}. No encontré ningún trade.</div>`;
+    }
+  } catch (e) {
+    $("#lista").innerHTML =
+      `<div class="panel nota nRojo">no pude revisar: ${esc(e.message)}</div>`
+      + filasHtml(encontrados);
+    engancharFilas();
+  }
+  b.disabled = false; c.disabled = false; b.textContent = "CALCULAR TODO";
+}
+
+function pintar(d) {
+  const r = d.recomendacion, dec = d.decimales;
+  let h = "";
+
+  if (d.respaldo) {
+    h += `<div class="panel nota nAmbar" style="margin-bottom:12px">
+      <b>Pediste ${esc(d.mercado_pedido)} y Binance no respondio.</b> Esto salio
+      de ${esc(d.mercado_nombre)}, y de ahi sale tambien la comision:
+      ${d.costo_pct}% ida y vuelta, o sea un piso de stop de
+      ${d.piso_stop_pct}%. Si vas a operar futuros, calcula desde una conexion
+      que llegue a la API de futuros: los precios del perpetuo no son
+      exactamente estos.</div>`;
+  }
+
+  if (r) {
+    h += `<div class="trade t${r.lado}">
+      <h2>${r.accion} · ${esc(d.simbolo)} · ${esc(d.tf)} · ${esc(r.zona_tipo)}</h2>
+      <div class="niveles">
+        <div class="nivel"><div class="et">entrada ${esc(r.tipo_orden)}</div>
+          <div class="vl">${fijo(r.entrada, dec)}</div></div>
+        <div class="nivel sl"><div class="et">stop loss</div>
+          <div class="vl">${fijo(r.stop, dec)}</div></div>
+        <div class="nivel tp"><div class="et">take profit</div>
+          <div class="vl">${fijo(r.objetivo, dec)}</div></div>
+      </div>
+      <div class="cuerpo"><table>
+        <tr><td>precio ahora</td><td>${fijo(d.precio, dec)}
+            · la entrada esta a ${r.distancia_pct}%</td></tr>
+        <tr><td>riesgo</td><td>${r.riesgo_pct}% del precio · 1:${r.rr_real}</td></tr>
+        <tr><td>la comision se lleva</td><td>${r.costo_r} R por operacion</td></tr>
+        <tr><td>acierto para empatar</td><td><b>${r.acierto_empate}%</b>
+            · al azar da ${r.acierto_azar}%</td></tr>
+        <tr><td>se invalida</td><td>cierre de ${esc(d.tf)} pasando
+            ${fijo(r.invalida, dec)}</td></tr>
+        <tr><td>la zona nacio</td><td>${esc(r.nacio)} UTC</td></tr>
+        ${d.vwap ? `<tr><td>VWAP del día</td><td>${fijo(d.vwap, dec)}</td></tr>` : ""}
+      </table>
+      <div class="nota nGris">${esc(r.motivos.join("; "))}</div>`;
+
+    if (r.vwap_afino) {
+      h += `<div class="nota nGris"><b>La entrada se afinó al VWAP.</b>
+        El valor del día cae en la mitad cercana de la zona, así que el límite
+        queda ahí y el stop sigue en el borde de la idea.</div>`;
+    }
+
+    if (r.gatillo) {
+      h += `<div class="nota nGris"><b>${esc(r.gatillo)}.</b>
+        La entrada es el límite en esa media.</div>`;
+    } else if (r.confluencia && r.confluencia.length) {
+      h += `<div class="nota nGris"><b>Los tres puntos coinciden.</b>
+        ${esc(r.confluencia.join(" · "))}. El ${esc(r.lado)} se activa cuando
+        el precio toca la entrada.</div>`;
+    }
+
+    if (r.contracorriente) {
+      h += `<div class="nota nAmbar"><b>Va contra ${esc(r.contra_tf.join(" y "))}.</b>
+        Es un scalp hasta el objetivo y afuera. No lo dejes correr esperando mas,
+        porque la temporalidad mayor empuja para el otro lado.</div>`;
+    } else if (r.favor_tf.length) {
+      h += `<div class="nota nGris">A favor de
+        ${esc(r.favor_tf.join(" y "))}.</div>`;
+    }
+    if (r.ensanchado) {
+      h += `<div class="nota nAmbar"><b>El stop se ensancho.</b> El borde de la
+        zona daba ${r.stop_zona_pct}% y con eso la comision se llevaba
+        ${(d.costo_pct / r.stop_zona_pct).toFixed(2)} R por operacion. Se corrio
+        al piso de ${d.piso_stop_pct}%. Ojo: el nivel que define la idea y el que
+        paga las cuentas ya no son el mismo.</div>`;
+    }
+    h += `</div></div>`;
+  } else {
+    h += `<div class="panel nota nAmbar"><b>Ninguna zona operable ahora.</b>
+      ${esc(d.diagnostico || "")}</div>`;
+  }
+
+  h += `<h3>Temporalidad mayor</h3><div class="ctx">` + d.contexto.map(c => {
+    if (c.error) return `<div class="ctxCaja"><span class="ctxTf">${esc(c.tf)}</span>
+      <div>${esc(c.error)}</div></div>`;
+    const pos = Math.max(0, Math.min(100, c.pos_rango));
+    return `<div class="ctxCaja">
+      <div><span class="ctxTf">${esc(c.tf)}</span>
+        <span class="${c.sesgo}"> ${esc(c.sesgo)}</span>
+        <span class="zDet"> · RSI ${c.rsi}</span></div>
+      <div class="zDet" style="margin-top:4px">${esc(c.lecturas.join(" · "))}</div>
+      <div class="zDet" style="margin-top:6px">rango 24h ${fijo(c.bajo_24h, dec)}
+        — ${fijo(c.alto_24h, dec)} · precio en el ${c.pos_rango}%</div>
+      <div class="barra"><i style="left:${pos}%"></i></div>
+    </div>`;
+  }).join("") + `</div>`;
+
+  h += `<h3>Todas las zonas (${d.zonas.length})</h3>` + d.zonas.map(z => `
+    <div class="zona z${z.lado}${z.operable ? "" : " muerta"}">
+      <div class="zTitulo"><span>${z.lado} ${esc(z.tipo)}
+        <span class="pts">${z.puntos} pts</span></span>
+        <span class="zDet">${esc(z.nacio)}</span></div>
+      <div class="zDet">zona ${fijo(z.piso, dec)} — ${fijo(z.techo, dec)}</div>
+      <div class="zDet">entrada ${fijo(z.entrada, dec)} · SL
+        ${fijo(z.stop, dec)} · TP ${fijo(z.objetivo, dec)} · riesgo
+        ${z.riesgo_pct}% · costo ${z.costo_r} R${
+          z.vwap_afino ? " · entrada afinada al VWAP"
+                       : (z.vwap_toca ? " · toca el VWAP" : "")}</div>
+      <div class="zDet" style="margin-top:4px">${
+        z.operable ? "✓ " + esc(z.motivo_operable)
+                   : "· " + esc(z.motivo_operable)}</div>
+      <div class="zDet" style="margin-top:4px">${
+        (z.confluencia && z.confluencia.length)
+          ? "✓ " + esc(z.confluencia.join(" · "))
+          : ((z.falta_confluencia && z.falta_confluencia.length)
+             ? "· " + esc(z.falta_confluencia.join("; ")) : "")}</div>
+    </div>`).join("");
+
+  h += `<details><summary>Ver el Pine para dibujarlo en TradingView</summary>
+    <pre id="pine">${esc(d.pine)}</pre>
+    <button onclick="copiar()" style="width:100%;background:#21262d;
+      color:var(--texto);border:1px solid var(--borde);border-radius:8px;
+      padding:11px;font-size:14px;margin-top:8px">copiar al portapapeles</button>
+    </details>`;
+
+  h += `<div class="pie">
+    ${esc(d.simbolo)} ${esc(d.tf)} · ventana ${esc(d.desde)} → ${esc(d.hasta)} UTC
+    · calculado ${esc(d.calculado)} UTC<br>
+    datos de ${esc(d.mercado_nombre)} · ATR ${fijo(d.atr, dec)}
+    (${d.atr_pct}% del precio)${
+      d.vwap ? " · VWAP del día " + fijo(d.vwap, dec) : ""} · comision ${d.costo_pct}% ida y vuelta${
+      d.tick ? " · precios redondeados al tick de " + d.tick : ""}<br><br>
+    El RR que figura puede quedar abajo del que pediste: al llevar los precios al
+    tick del par, el stop se redondea alejandose de la entrada y el objetivo
+    acercandose, para que el numero informado sea el peor de los dos y no el
+    mejor.<br><br>
+    El puntaje ordena la lista para no mirar veinte cajas iguales: los pesos son
+    un criterio, no una medicion, y no son la probabilidad de nada. El numero que
+    manda es <b>acierto para empatar</b>: entrando al azar con el mismo stop se
+    acierta 1/(1+RR), asi que lo que hay que superar son esos puntos, no el 50%.
+    Y hasta no tener 30 operaciones anotadas, ninguna racha significa nada.
+    <br><br><b>versión ${esc(d.version_mesa)} · análisis ${
+      d.version_zonas ? esc(d.version_zonas) : "sin número (zonas.py viejo)"}</b>
+  </div>`;
+  return h;
+}
+
+function copiar() {
+  const t = $("#pine").textContent;
+  navigator.clipboard?.writeText(t).then(
+    () => alert("Pine copiado. Pegalo en el Pine Editor de TradingView."),
+    () => alert("No pude copiar solo. Marcalo a mano."));
+}
+
+const PILLS = {pendiente:"pendiente", en_curso:"abierta", tp:"TP",
+               sl:"SL", invalidado:"invalidada", agotado:"agotada",
+               vencido:"vencio"};
+
+function pintarBitacora(d) {
+  const s = d.resumen || {};
+  const rMedio = s.r_medio === null || s.r_medio === undefined
+    ? "" : ` · ${s.r_medio} R por trade cerrado`;
+  let h = `<div class="zDet" style="margin-bottom:8px">${s.n || 0} anotados · `
+    + `${s.tp || 0} al TP · ${s.sl || 0} al SL · ${s.en_curso || 0} abiertas · `
+    + `${s.pendiente || 0} pendientes · ${s.invalidado || 0} invalidadas · `
+    + `${s.agotado || 0} agotadas · ${s.vencido || 0} vencidas${rMedio}</div>`;
+  if (!d.filas || !d.filas.length) {
+    h += `<div class="estado">todavia no hay trades. Apreta CALCULAR y el que
+      salga queda aca.</div>`;
+    $("#bitacoraCuerpo").innerHTML = h;
+    return;
+  }
+  h += d.filas.map(f => {
+    const dec = f.decimales || 2;
+    const cuando = f.resuelto ? ` · resuelto ${esc(f.resuelto)} UTC` : "";
+    return `<div class="bita b${esc(f.lado)}">
+      <div class="bTop"><span>${esc(f.simbolo)} ${esc(f.tf)} ${esc(f.lado)}
+        ${esc(f.zona_tipo)}</span>
+        <span class="pill ${esc(f.estado)}">${esc(PILLS[f.estado] || f.estado)}</span></div>
+      <div class="zDet">entrada ${fijo(f.entrada, dec)} · SL ${fijo(f.stop, dec)}
+        · TP ${fijo(f.objetivo, dec)} · invalida ${fijo(f.invalida, dec)}</div>
+      <div class="zDet">anotado ${esc(f.anotado)} UTC${cuando}</div>
+      <div style="margin-top:4px">${esc(f.detalle || "")}</div>
+    </div>`;
+  }).join("");
+  $("#bitacoraCuerpo").innerHTML = h;
+}
+
+async function cargarBitacora(actualizar) {
+  const caja = $("#bitacoraCuerpo");
+  if (actualizar) caja.innerHTML =
+    `<div class="estado">mirando como salieron las ordenes abiertas…</div>`;
+  try {
+    const d = await (await fetch("api/bitacora" + (actualizar ? "?actualizar=1" : ""))).json();
+    if (d.error) {
+      caja.innerHTML = `<div class="nota nRojo">${esc(d.error)}</div>`;
+      return;
+    }
+    pintarBitacora(d);
+  } catch (e) {
+    caja.innerHTML = `<div class="nota nRojo">no pude leer la bitacora: ${esc(e.message)}</div>`;
+  }
+}
+
+$("#calcular").addEventListener("click", calcular);
+$("#buscar").addEventListener("click", buscar);
+$("#actualizarBit").addEventListener("click", () => cargarBitacora(true));
+inicio();
+cargarBitacora(false);
+</script></body></html>

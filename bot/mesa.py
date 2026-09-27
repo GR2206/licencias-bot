@@ -49,7 +49,7 @@ POR_DEFECTO = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
 TFS = ["5m", "15m", "30m", "1h", "4h"]
 # El numero que se ve abajo de la pagina. Si no dice este, el archivo del
 # celular es viejo. Se sube junto con zonas.VERSION.
-VERSION = 16
+VERSION = 17
 
 # Cuantas velas se deja puesta la orden limite. En 15m son 6 horas. Pasado
 # eso, si el precio no toco la entrada, el trade vencio: no es una perdida,
@@ -957,79 +957,76 @@ class Manejador(BaseHTTPRequestHandler):
     def do_GET(self):
         partes = urlparse(self.path)
         ruta = partes.path.rstrip("/") or "/"
-        q = parse_qs(partes.query)
+        if ruta == "/":
+            self._responder(200, "text/html; charset=utf-8", PAGINA.encode())
+            return
+        codigo, tipo, cuerpo, extra = atender(self.path)
+        self._responder(codigo, tipo, cuerpo.encode("utf-8"), extra)
 
-        def uno(nombre, defecto=""):
-            return q.get(nombre, [defecto])[0]
 
-        try:
-            if ruta == "/":
-                self._responder(200, "text/html; charset=utf-8", PAGINA.encode())
-            elif ruta == "/api/config":
-                self._json({"simbolos": self.simbolos, "tfs": TFS,
-                            "tf_def": self.tf_def})
-            elif ruta == "/api/calcular":
-                simbolo = uno("simbolo").upper()
-                if not simbolo.isalnum():
-                    self._json({"error": "simbolo invalido"}, 400)
-                    return
-                tf = uno("tf", self.tf_def)
-                if tf not in zonas.MINUTOS:
-                    self._json({"error": f"temporalidad {tf} desconocida"}, 400)
-                    return
-                mercado = uno("mercado", "futuros")
-                if mercado not in zonas.MERCADOS:
-                    mercado = "futuros"
-                try:
-                    dias = max(1.0, min(30.0, float(uno("dias", "3"))))
-                    rr = max(1.0, min(10.0, float(uno("rr", "3"))))
-                except ValueError:
-                    dias, rr = 3.0, 3.0
-                try:
+def atender(path):
+    """La API de la mesa, sin el servidor. La usa Termux y la pagina de Chrome.
+
+    Devuelve codigo, tipo, cuerpo y encabezados extra.
+    """
+    if not path.startswith("/"):
+        path = "/" + path
+    partes = urlparse(path)
+    ruta = partes.path.rstrip("/") or "/"
+    q = parse_qs(partes.query)
+
+    def uno(nombre, defecto=""):
+        return q.get(nombre, [defecto])[0]
+
+    def json_respuesta(datos, codigo=200):
+        return (codigo, "application/json; charset=utf-8",
+                json.dumps(datos, ensure_ascii=False), {})
+
+    try:
+        if ruta == "/api/config":
+            return json_respuesta({
+                "simbolos": Manejador.simbolos,
+                "tfs": TFS,
+                "tf_def": Manejador.tf_def,
+            })
+        if ruta in ("/api/calcular", "/api/buscar"):
+            simbolo = uno("simbolo").upper()
+            if not simbolo.isalnum():
+                return json_respuesta({"error": "simbolo invalido"}, 400)
+            tf = uno("tf", Manejador.tf_def)
+            if tf not in zonas.MINUTOS:
+                return json_respuesta(
+                    {"error": f"temporalidad {tf} desconocida"}, 400)
+            mercado = uno("mercado", "futuros")
+            if mercado not in zonas.MERCADOS:
+                mercado = "futuros"
+            try:
+                dias = max(1.0, min(30.0, float(uno("dias", "3"))))
+                rr = max(1.0, min(10.0, float(uno("rr", "3"))))
+            except ValueError:
+                dias, rr = 3.0, 3.0
+            try:
+                if ruta == "/api/calcular":
                     salida = calcular(simbolo, tf, dias, rr, mercado,
-                                      self.costo_max_r)
+                                      Manejador.costo_max_r)
                     anotar(salida)
-                    self._json(salida)
-                except RuntimeError as e:
-                    self._json({"error": str(e)}, 502)
-            elif ruta == "/api/buscar":
-                simbolo = uno("simbolo").upper()
-                if not simbolo.isalnum():
-                    self._json({"error": "simbolo invalido"}, 400)
-                    return
-                tf = uno("tf", self.tf_def)
-                if tf not in zonas.MINUTOS:
-                    self._json({"error": f"temporalidad {tf} desconocida"}, 400)
-                    return
-                mercado = uno("mercado", "futuros")
-                if mercado not in zonas.MERCADOS:
-                    mercado = "futuros"
-                try:
-                    dias = max(1.0, min(30.0, float(uno("dias", "3"))))
-                    rr = max(1.0, min(10.0, float(uno("rr", "3"))))
-                except ValueError:
-                    dias, rr = 3.0, 3.0
-                try:
-                    self._json(mirar(simbolo, tf, dias, rr, mercado,
-                                     self.costo_max_r))
-                except RuntimeError as e:
-                    self._json({"error": str(e)}, 502)
-            elif ruta == "/api/bitacora":
-                if uno("actualizar") == "1":
-                    self._json(actualizar_bitacora())
-                else:
-                    with _candado_bit:
-                        self._json(_vista(_cargar_bitacora()))
-            elif ruta == "/api/bitacora.csv":
-                vista = actualizar_bitacora()
-                cuerpo = bitacora_csv(vista["filas"]).encode("utf-8")
-                self._responder(200, "text/csv; charset=utf-8", cuerpo, {
-                    "Content-Disposition": "attachment; filename=bitacora.csv",
-                })
-            else:
-                self._json({"error": "no existe"}, 404)
-        except Exception as e:
-            self._json({"error": f"error inesperado: {e!r}"}, 500)
+                    return json_respuesta(salida)
+                return json_respuesta(mirar(
+                    simbolo, tf, dias, rr, mercado, Manejador.costo_max_r))
+            except RuntimeError as e:
+                return json_respuesta({"error": str(e)}, 502)
+        if ruta == "/api/bitacora":
+            if uno("actualizar") == "1":
+                return json_respuesta(actualizar_bitacora())
+            with _candado_bit:
+                return json_respuesta(_vista(_cargar_bitacora()))
+        if ruta == "/api/bitacora.csv":
+            vista = actualizar_bitacora()
+            return (200, "text/csv; charset=utf-8", bitacora_csv(vista["filas"]),
+                    {"Content-Disposition": "attachment; filename=bitacora.csv"})
+        return json_respuesta({"error": "no existe"}, 404)
+    except Exception as e:
+        return json_respuesta({"error": f"error inesperado: {e!r}"}, 500)
 
 
 def main():
