@@ -573,6 +573,12 @@ def acierto_para_empatar(rr, costo_r):
 # o atras, y la orden limita pide un retroceso para volver a un nivel que el
 # mercado ya negocio.
 PREMIO_MIN_R = 1.0
+# Si la entrada queda mas lejos que esto, el impulso ya se fue. Volver hasta
+# ahi no es un retroceso de esta temporalidad: es devolver gran parte del
+# movimiento. 1.5 ATR en M15 de RUNE, con el precio a 2.2 ATR de la zona,
+# era exactamente el caso de "la senal salio tarde".
+DISTANCIA_MAX_ATR = 1.5
+VERSION = 8
 
 
 def premio_por_delante(zona, precio):
@@ -611,6 +617,9 @@ def operable(zona, precio, atr=0.0, stop_max_atr=3.0):
     5. Entre el precio de ahora y el objetivo tiene que quedar al menos 1R.
        Si no, el TP ya esta donde el mercado cotiza y la orden pide un
        retroceso para volver ahi.
+    6. La entrada no puede quedar a mas de DISTANCIA_MAX_ATR. Mas lejos, el
+       impulso ya corrio y el limite espera un retroceso que devuelve gran
+       parte del movimiento.
     """
     entrada = zona["plan"]["entrada"]
     if not zona["vivo"]:
@@ -636,6 +645,13 @@ def operable(zona, precio, atr=0.0, stop_max_atr=3.0):
         return False, (f"el objetivo ya quedo atras: desde aca quedan "
                        f"{premio:.1f}R y hacen falta {PREMIO_MIN_R:.0f}R "
                        f"por delante")
+
+    if atr > 0 and DISTANCIA_MAX_ATR > 0:
+        lejos = abs(entrada - precio) / atr
+        if lejos > DISTANCIA_MAX_ATR:
+            return False, (f"el impulso ya se fue: la entrada queda a "
+                           f"{lejos:.1f} ATR y el retroceso devolveria gran "
+                           f"parte del movimiento")
 
     if zona["direccion"] == -1:
         return True, "limite de venta, esperando que el precio suba a la zona"
@@ -756,6 +772,14 @@ def diagnostico(zonas, costo_pct, piso_pct, stop_max_atr, atr_pct, tf):
             "rompio estructura, el hueco de ese movimiento todavia abierto, "
             f"y 4h con 1h del mismo lado. La mas cerca es {z['tipo']} {lado}. "
             "Falta: " + "; ".join(falta) + ".")
+
+    lejos = [z for z in zonas if "impulso ya se fue" in z.get("motivo_operable", "")]
+    if lejos and not operables:
+        return (
+            "El movimiento ya corrio. La entrada queda a mas de "
+            f"{DISTANCIA_MAX_ATR:.1f} ATR del precio, y volver hasta ahi es "
+            "devolver gran parte del impulso, no un retroceso corto. No se "
+            "entra a mercado para alcanzarla: si no vuelve cerca, no hay trade.")
 
     anchas = [z for z in zonas if "demasiado ancha" in z["motivo_operable"]]
     if anchas and all(z["plan"]["ensanchado"] for z in anchas):

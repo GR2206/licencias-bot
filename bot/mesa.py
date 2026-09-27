@@ -47,6 +47,9 @@ POR_DEFECTO = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
                "ETCUSDT", "XLMUSDT", "ICPUSDT", "FETUSDT", "RUNEUSDT",
                "ARUSDT", "GRTUSDT", "DYDXUSDT"]
 TFS = ["5m", "15m", "30m", "1h", "4h"]
+# El numero que se ve abajo de la pagina. Si no dice este, el archivo del
+# celular es viejo. Se sube junto con zonas.VERSION.
+VERSION = 8
 
 # Cuantas velas se deja puesta la orden limite. En 15m son 6 horas. Pasado
 # eso, si el precio no toco la entrada, el trade vencio: no es una perdida,
@@ -408,6 +411,8 @@ def _para_web(a):
         "calculado": datetime.now(timezone.utc).strftime("%H:%M:%S"),
         "contexto": ctx, "zonas": zs, "recomendacion": rec,
         "diagnostico": a["diagnostico"],
+        "version_mesa": VERSION,
+        "version_zonas": getattr(zonas, "VERSION", None),
         "pine": zonas.escribir_pine(a["simbolo"], a["tf"], a["zonas"],
                                     a["_velas"], a["rr"], a["dias"]),
     }
@@ -567,6 +572,7 @@ PAGINA = """<!DOCTYPE html>
       <a id="bajarCsv" href="api/bitacora.csv">descargar CSV</a>
     </div>
   </div>
+  <div class="pie" style="text-align:center">versión __VERSION__</div>
 </main>
 <script>
 const $ = (s) => document.querySelector(s);
@@ -737,6 +743,8 @@ function pintar(d) {
     manda es <b>acierto para empatar</b>: entrando al azar con el mismo stop se
     acierta 1/(1+RR), asi que lo que hay que superar son esos puntos, no el 50%.
     Y hasta no tener 30 operaciones anotadas, ninguna racha significa nada.
+    <br><br><b>versión ${esc(d.version_mesa)} · análisis ${
+      d.version_zonas ? esc(d.version_zonas) : "sin número (zonas.py viejo)"}</b>
   </div>`;
   return h;
 }
@@ -803,6 +811,7 @@ inicio();
 cargarBitacora(false);
 </script></body></html>
 """
+PAGINA = PAGINA.replace("__VERSION__", str(VERSION))
 
 
 class Manejador(BaseHTTPRequestHandler):
@@ -903,6 +912,7 @@ def main():
     print("  En Termux el navegador del celular llega a localhost sin nada mas.")
     print("  No manda ordenes: calcula y te dice donde poner los precios.")
     print("  La bitacora se ve en la misma pagina y se baja en CSV.")
+    print(f"  Version {VERSION}. Si la pagina no dice ese numero, es el archivo viejo.")
     print("=" * 66)
 
     servidor = ThreadingHTTPServer(("0.0.0.0", puerto), Manejador)
