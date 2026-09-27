@@ -287,6 +287,21 @@ def order_blocks(velas, cfg, desde_indice):
             else:
                 empuje = (top - v.cierre) / a
 
+            hueco = _hueco_impulso(velas, i, k, alcista)
+            hueco_vivo = False
+            if hueco:
+                piso_h, techo_h = hueco
+                hueco_vivo = True
+                for w in velas[i + 1:]:
+                    if alcista and w.cierre < piso_h:
+                        hueco_vivo = False
+                        break
+                    if not alcista and w.cierre > techo_h:
+                        hueco_vivo = False
+                        break
+            else:
+                piso_h = techo_h = None
+
             encontrados.append({
                 "tipo": "OB",
                 "direccion": 1 if alcista else -1,
@@ -297,6 +312,8 @@ def order_blocks(velas, cfg, desde_indice):
                 "empuje_atr": empuje,
                 "volumen_rel": _volumen_relativo(velas, i - k),
                 "atr": a,
+                "hueco_bot": piso_h, "hueco_top": techo_h,
+                "hueco_vivo": hueco_vivo,
             })
     return encontrados
 
@@ -320,6 +337,24 @@ def _volumen_relativo(velas, i, ventana=20):
         return 1.0
     media = sum(previas) / len(previas)
     return velas[i].volumen / media if media else 1.0
+
+
+def _hueco_impulso(velas, i, k, alcista):
+    """El hueco que dejo el mismo movimiento que creo el order block.
+
+    No es cualquier FVG de la ventana: es el desbalance de esa ruptura. Si
+    despues el precio lo cierra, el movimiento ya entrego lo que tenia y el
+    bloque deja de ser una entrada.
+    """
+    for j in range(k, 1, -1):
+        if i - j < 0 or i - (j - 2) >= len(velas):
+            continue
+        origen, destino = velas[i - j], velas[i - (j - 2)]
+        if alcista and destino.minimo > origen.maximo:
+            return origen.maximo, destino.minimo
+        if not alcista and destino.maximo < origen.minimo:
+            return destino.maximo, origen.minimo
+    return None
 
 
 def fvgs(velas, desde_indice, atr_min=0.25):
@@ -607,14 +642,67 @@ def operable(zona, precio, atr=0.0, stop_max_atr=3.0):
     return True, "limite de compra, esperando que el precio baje a la zona"
 
 
+def congruencia(zona, ctx):
+    """Los tres puntos que tienen que coincidir para que haya un trade.
+
+    1. Un movimiento de verdad: order block nacido de una ruptura con al menos
+       1.5 ATR de desplazamiento. Un hueco suelto no alcanza.
+    2. El hueco de ESE movimiento sigue abierto. Si el precio ya lo lleno, el
+       impulso entrego lo que tenia.
+    3. 4h y 1h del mismo lado. Si una empuja para el otro lado, no hay
+       congruencia: hay una pelea de temporalidades.
+
+    El largo o el corto no se activa por el puntaje. Se activa cuando el precio
+    toca la entrada de una zona que ya junta los tres.
+    """
+    activos, faltan = [], []
+    if zona.get("tipo") != "OB":
+        return activos, ["un FVG suelto no activa: hace falta el order block del movimiento"]
+
+    empuje = zona.get("empuje_atr") or 0
+    if empuje >= 1.5:
+        activos.append(f"movimiento de {empuje:.1f} ATR que rompio estructura")
+    else:
+        faltan.append(f"el movimiento fue chico ({empuje:.1f} ATR, hace falta 1.5)")
+
+    if zona.get("hueco_vivo"):
+        activos.append("el hueco de ese movimiento sigue abierto")
+    else:
+        faltan.append("el hueco del movimiento ya se lleno")
+
+    mayores = [c for c in ctx if "signo" in c]
+    favor = [c["tf"] for c in mayores if c.get("signo") == zona["direccion"]]
+    contra = [c["tf"] for c in mayores
+              if c.get("signo") and c.get("signo") != zona["direccion"]]
+    if favor and not contra:
+        activos.append("a favor de " + " y ".join(favor))
+    elif not mayores:
+        faltan.append("no pude leer 4h ni 1h")
+    elif contra and favor:
+        faltan.append("la temporalidad mayor no coincide: "
+                      + " y ".join(favor) + " a favor, "
+                      + " y ".join(contra) + " en contra")
+    elif contra:
+        faltan.append("va contra " + " y ".join(contra))
+    else:
+        faltan.append("4h y 1h estan mixtos, no confirman el lado")
+    return activos, faltan
+
+
 def recomendar(zonas, precio, ctx, rr):
     """Elige la zona que se puede operar ahora y explica la eleccion.
 
-    Prioriza el puntaje y, a igual puntaje, la zona mas reciente. Una zona con
-    el stop ensanchado ni siquiera llega aca: operable() la descarta, porque
-    ese stop ya no es el nivel que invalida la idea.
+    Solo entra una zona operable que ademas junta los tres puntos de
+    congruencia(). El puntaje desempata entre esas. Una zona con el stop
+    ensanchado ni siquiera llega aca: operable() la descarta.
     """
-    candidatas = [(z, z["motivo_operable"]) for z in zonas if z["operable"]]
+    candidatas = []
+    for z in zonas:
+        if not z.get("operable"):
+            continue
+        if z.get("falta_confluencia", ["sin congruencia"]):
+            continue
+        candidatas.append((z, z["motivo_operable"]))
     if not candidatas:
         return None
 
@@ -642,6 +730,7 @@ def recomendar(zonas, precio, ctx, rr):
         "invalida": z["top"] if z["direccion"] == -1 else z["bot"],
         "contra_tf": contra, "favor_tf": favor,
         "contracorriente": bool(contra) and not favor,
+        "confluencia": z.get("confluencia") or [],
         "acierto_empate": empate,
         "acierto_azar": azar,
     }
@@ -655,6 +744,18 @@ def diagnostico(zonas, costo_pct, piso_pct, stop_max_atr, atr_pct, tf):
     if not zonas:
         return ("No salio ninguna zona en esta ventana con los filtros del bot. "
                 "Probá una ventana mas larga o una temporalidad mayor.")
+
+    operables = [z for z in zonas if z.get("operable")]
+    completas = [z for z in operables if not z.get("falta_confluencia")]
+    if operables and not completas:
+        z = max(operables, key=lambda x: x.get("puntos", 0))
+        lado = "LONG" if z["direccion"] == 1 else "SHORT"
+        falta = z.get("falta_confluencia") or ["no junta los tres puntos"]
+        return (
+            "Ningun trade junta los tres puntos a la vez: un movimiento que "
+            "rompio estructura, el hueco de ese movimiento todavia abierto, "
+            f"y 4h con 1h del mismo lado. La mas cerca es {z['tipo']} {lado}. "
+            "Falta: " + "; ".join(falta) + ".")
 
     anchas = [z for z in zonas if "demasiado ancha" in z["motivo_operable"]]
     if anchas and all(z["plan"]["ensanchado"] for z in anchas):
@@ -748,6 +849,10 @@ def analizar(simbolo, tf="15m", dias=3.0, rr=3.0, costo_max_r=0.15,
     # unica zona operable quedaba en el puesto nueve, recortar primero la hacia
     # desaparecer y el panel decia "nada para operar" teniendo un trade.
     ctx = contexto(simbolo, mayores, usado)
+    for z in todas:
+        activos, faltan = congruencia(z, ctx)
+        z["confluencia"] = activos
+        z["falta_confluencia"] = faltan
     rec = recomendar(todas, precio, ctx, rr)
 
     zonas = todas[:top]

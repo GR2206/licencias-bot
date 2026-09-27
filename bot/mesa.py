@@ -346,6 +346,8 @@ def _para_web(a):
             "ensanchado": p["ensanchado"],
             "stop_zona_pct": round(p["stop_zona_pct"], 2),
             "motivos": z["motivos"],
+            "confluencia": z.get("confluencia") or [],
+            "falta_confluencia": z.get("falta_confluencia") or [],
         })
 
     ctx = []
@@ -386,6 +388,7 @@ def _para_web(a):
             "nacio": datetime.fromtimestamp(
                 z["tiempo"] / 1000, timezone.utc).strftime("%d/%m %H:%M"),
             "nacio_ms": z["tiempo"],
+            "confluencia": z.get("confluencia") or [],
         }
 
     return {
@@ -651,6 +654,12 @@ function pintar(d) {
       </table>
       <div class="nota nGris">${esc(r.motivos.join("; "))}</div>`;
 
+    if (r.confluencia && r.confluencia.length) {
+      h += `<div class="nota nGris"><b>Los tres puntos coinciden.</b>
+        ${esc(r.confluencia.join(" · "))}. El ${esc(r.lado)} se activa cuando
+        el precio toca la entrada.</div>`;
+    }
+
     if (r.contracorriente) {
       h += `<div class="nota nAmbar"><b>Va contra ${esc(r.contra_tf.join(" y "))}.</b>
         Es un scalp hasta el objetivo y afuera. No lo dejes correr esperando mas,
@@ -699,6 +708,11 @@ function pintar(d) {
       <div class="zDet" style="margin-top:4px">${
         z.operable ? "✓ " + esc(z.motivo_operable)
                    : "· " + esc(z.motivo_operable)}</div>
+      <div class="zDet" style="margin-top:4px">${
+        (z.confluencia && z.confluencia.length)
+          ? "✓ " + esc(z.confluencia.join(" · "))
+          : ((z.falta_confluencia && z.falta_confluencia.length)
+             ? "· " + esc(z.falta_confluencia.join("; ")) : "")}</div>
     </div>`).join("");
 
   h += `<details><summary>Ver el Pine para dibujarlo en TradingView</summary>
