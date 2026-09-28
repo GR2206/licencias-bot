@@ -674,6 +674,11 @@ def puntaje(zona, velas, precio_actual, osc=None):
 
     if zona["tipo"] == "OB":
         puntos += 1; motivos.append("rompio estructura (BOS)")
+        if zona.get("hueco_vivo"):
+            puntos += 1
+            motivos.append("el hueco del movimiento sigue abierto")
+        elif zona.get("hueco_top") is not None:
+            motivos.append("el hueco ya se lleno; el bloque sigue entero")
 
     if sigue_vivo(zona, velas):
         puntos += 2; motivos.append("sin mitigar")
@@ -835,18 +840,20 @@ def acierto_para_empatar(rr, costo_r):
 PREMIO_MIN_R = 1.0
 # Si la entrada queda mas lejos que esto, el impulso ya se fue. Volver hasta
 # ahi no es un retroceso de esta temporalidad: es devolver gran parte del
-# movimiento. 1.5 ATR en M15 de RUNE, con el precio a 2.2 ATR de la zona,
-# era exactamente el caso de "la senal salio tarde".
-DISTANCIA_MAX_ATR = 1.5
-# Si el precio ya recorrio esta fraccion del objetivo 1:3 despues de nacer la
-# zona, el premio se negoceo sin la entrada. Volver ahi es entrar tarde.
-RECORRIDO_AGOTADO = 0.8
+# movimiento. RUNE quedo a mas de 2 ATR y la entrada era la reversa, no el
+# retroceso. 2 ATR todavia es un retroceso de esta vela; 1.5 dejaba afuera
+# zonas que estaban a un suspiro.
+DISTANCIA_MAX_ATR = 2.0
+# El movimiento se paso cuando el precio TOCO el objetivo, no cuando llevaba
+# el 80% del camino. Con 80% una ruptura sana de 1.5 ATR ya quedaba "agotada"
+# antes de que existiera el retroceso, y la lista salia vacia.
+RECORRIDO_AGOTADO = 1.0
 # Las MA del grafico de Binance. La 7 es la rapida: el precio la roza todo el
 # tiempo, asi que no activa un trade. 25, 99 y 200 si, cuando ademas hay vela
 # gatillo.
 MEDIAS = (7, 25, 99, 200)
 MEDIAS_GATILLO = (25, 99, 200)
-VERSION = 21
+VERSION = 22
 # El RSI del grafico de Binance en el celular es 6, no el 14 de los libros.
 # El MACD es 12, 26, 9: DIF, DEA, y MACD = DIF - DEA.
 RSI_TRADE = 6
@@ -955,9 +962,6 @@ def operable(zona, precio, atr=0.0, stop_max_atr=3.0):
     6. La entrada no puede quedar a mas de DISTANCIA_MAX_ATR. Mas lejos, el
        impulso ya corrio y el limite espera un retroceso que devuelve gran
        parte del movimiento.
-    7. La zona no puede quedar entera del lado equivocado del VWAP del dia.
-       Un largo debajo del valor, o un corto arriba, ya no es un retroceso
-       hacia el precio medio de la sesion.
     """
     entrada = zona["plan"]["entrada"]
     if not zona["vivo"]:
@@ -995,9 +999,6 @@ def operable(zona, precio, atr=0.0, stop_max_atr=3.0):
                            f"{lejos:.1f} ATR y el retroceso devolveria gran "
                            f"parte del movimiento")
 
-    if zona["plan"].get("contra_vwap"):
-        return False, ("la zona queda del lado equivocado del VWAP del dia")
-
     if zona["direccion"] == -1:
         return True, "limite de venta, esperando que el precio suba a la zona"
     return True, "limite de compra, esperando que el precio baje a la zona"
@@ -1007,11 +1008,14 @@ def congruencia(zona, ctx, osc=None):
     """Los tres puntos que tienen que coincidir para que haya un trade.
 
     1. Un movimiento de verdad: order block nacido de una ruptura con al menos
-       1.5 ATR de desplazamiento. Un hueco suelto no alcanza.
-    2. El hueco de ESE movimiento sigue abierto. Si el precio ya lo lleno, el
-       impulso entrego lo que tenia.
-    3. 4h y 1h del mismo lado. Si una empuja para el otro lado, no hay
+       1.5 ATR de desplazamiento, que dejo un hueco. Un hueco suelto no alcanza.
+    2. 4h y 1h del mismo lado. Si una empuja para el otro lado, no hay
        congruencia: hay una pelea de temporalidades.
+
+    El hueco abierto suma certeza, pero ya no traba la entrada. En la practica
+    el retroceso que llena el limite tambien cierra el hueco, y exigirlo vivo
+    dejaba la lista vacia justo cuando el precio llegaba a la zona. Si el
+    bloque sigue entero y el objetivo no se toco, el retest vale.
 
     El largo o el corto no se activa por el puntaje. Se activa cuando el precio
     toca la entrada de una zona que ya junta los tres.
@@ -1028,8 +1032,8 @@ def congruencia(zona, ctx, osc=None):
 
     if zona.get("hueco_vivo"):
         activos.append("el hueco de ese movimiento sigue abierto")
-    else:
-        faltan.append("el hueco del movimiento ya se lleno")
+    elif zona.get("hueco_top") is None:
+        faltan.append("el movimiento no dejo hueco")
 
     mayores = [c for c in ctx if "signo" in c]
     favor = [c["tf"] for c in mayores if c.get("signo") == zona["direccion"]]
@@ -1048,18 +1052,14 @@ def congruencia(zona, ctx, osc=None):
     else:
         faltan.append("4h y 1h estan mixtos, no confirman el lado")
 
-    # El VWAP no es un cuarto punto. Tocar el valor suma certeza. Quedar del
-    # lado equivocado si bloquea, igual que operable().
-    if zona.get("plan", {}).get("contra_vwap"):
-        faltan.append("la zona queda del lado equivocado del VWAP del dia")
-    elif zona.get("plan", {}).get("vwap_toca"):
+    # El VWAP y los osciladores suman o restan. No son una llave mas: un
+    # retroceso sano deja el RSI y el MACD en contra, y la demanda debajo
+    # del valor. Si ademas 4h o 1h empujan al otro lado, ahi si no hay trade.
+    if zona.get("plan", {}).get("vwap_toca"):
         activos.append("la zona toca el VWAP del dia")
 
     _, favor, contra = valorar_osciladores(zona["direccion"], osc)
-    if len(contra) >= 2:
-        faltan.append("RSI(6) y el MACD van en contra")
-    else:
-        activos.extend(favor)
+    activos.extend(favor)
     return activos, faltan
 
 
@@ -1268,8 +1268,6 @@ def proponer_gatillo(velas, precio, atr, tf, ctx, rr, costo_pct, costo_max_r,
             continue
         osc = lectura_osciladores(velas)
         extra, a_favor, en_contra = valorar_osciladores(direccion, osc)
-        if len(en_contra) >= 2:
-            continue
         zona["puntos"] += extra
         zona["motivos"] = [texto] + a_favor + en_contra
         zona["confluencia"] = [texto] + a_favor
@@ -1446,6 +1444,12 @@ def analizar(simbolo, tf="15m", dias=3.0, rr=3.0, costo_max_r=0.15,
                         costo_max_r=costo_max_r),
                 vwap, atr_final, precio, rr, costo_pct, costo_max_r),
             z["direccion"], tick, costo_pct)
+        if z["plan"].get("contra_vwap"):
+            z["puntos"] -= 2
+            z["motivos"].append("la zona queda del lado de atras del VWAP")
+        elif z["plan"].get("vwap_toca"):
+            z["puntos"] += 1
+            z["motivos"].append("la zona toca el VWAP")
         marcar_agotado(z, velas)
         z["vivo"] = sigue_vivo(z, velas)
         z["operable"], z["motivo_operable"] = operable(z, precio, atr_final,
