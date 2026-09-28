@@ -156,7 +156,7 @@ def _pedir_yahoo(url):
     raise ultimo
 
 
-def _klines_de(mercado, simbolo, tf, velas_totales):
+def _klines_de(mercado, simbolo, tf, velas_totales, incluir_abierta=False):
     m = MERCADOS[mercado]
     minutos = MINUTOS.get(tf, 60)
     fin = int(time.time() * 1000)
@@ -174,7 +174,13 @@ def _klines_de(mercado, simbolo, tf, velas_totales):
             break
         cursor = siguiente
         time.sleep(0.05)
-    return ind.desde_klines(filas)[:-1]
+    velas = ind.desde_klines(filas)
+    # La ultima fila de Binance es la vela que todavia no cerro. El analisis
+    # la deja afuera para no medir un indicador con una vela a medias. La
+    # bitacora la pide: ahi es donde el precio toca la entrada y el stop.
+    if not incluir_abierta:
+        velas = velas[:-1]
+    return velas
 
 
 def _rango_yahoo(dias, tope):
@@ -208,8 +214,8 @@ _YAHOO_INTERVALO = {
 _precio_cme = {}
 
 
-def _agrupar(velas, minutos):
-    """Junta velas en bloques cerrados de `minutos`. El bloque abierto se deja afuera."""
+def _agrupar(velas, minutos, incluir_abierta=False):
+    """Junta velas en bloques de `minutos`. El bloque abierto queda afuera, salvo que se pida."""
     paso = minutos * 60_000
     grupos = {}
     orden = []
@@ -226,10 +232,12 @@ def _agrupar(velas, minutos):
             g.cierre = v.cierre
             g.volumen += v.volumen or 0.0
     ahora = int(time.time() * 1000)
+    if incluir_abierta:
+        return [grupos[t0] for t0 in orden]
     return [grupos[t0] for t0 in orden if t0 + paso <= ahora]
 
 
-def _velas_yahoo(simbolo, tf, velas_totales):
+def _velas_yahoo(simbolo, tf, velas_totales, incluir_abierta=False):
     """Velas del continuo CME. El símbolo es el de NinjaTrader (ES, no ES=F)."""
     contrato = CONTRATOS.get(simbolo)
     if not contrato:
@@ -246,10 +254,10 @@ def _velas_yahoo(simbolo, tf, velas_totales):
     url = ("https://query1.finance.yahoo.com/v8/finance/chart/"
            f"{yahoo}?interval={intervalo}&range={rango}&includePrePost=true")
     datos = _pedir_yahoo(url)
-    return _velas_de_respuesta(datos, simbolo, tf, velas_totales)
+    return _velas_de_respuesta(datos, simbolo, tf, velas_totales, incluir_abierta)
 
 
-def _velas_de_respuesta(datos, simbolo, tf, velas_totales):
+def _velas_de_respuesta(datos, simbolo, tf, velas_totales, incluir_abierta=False):
     result = ((datos or {}).get("chart") or {}).get("result") or []
     if not result:
         raise RuntimeError(f"no vinieron velas de {simbolo}")
@@ -273,8 +281,8 @@ def _velas_de_respuesta(datos, simbolo, tf, velas_totales):
             int(t) * 1000, float(opens[i]), float(highs[i]),
             float(lows[i]), float(closes[i]), float(vol)))
     if tf == "4h":
-        velas = _agrupar(velas, 240)
-    else:
+        velas = _agrupar(velas, 240, incluir_abierta)
+    elif not incluir_abierta:
         paso = MINUTOS[tf] * 60_000
         ahora = int(time.time() * 1000)
         if velas and velas[-1].tiempo + paso > ahora:
@@ -284,7 +292,7 @@ def _velas_de_respuesta(datos, simbolo, tf, velas_totales):
     return velas
 
 
-def bajar(simbolo, tf, velas_totales, mercado="futuros"):
+def bajar(simbolo, tf, velas_totales, mercado="futuros", incluir_abierta=False):
     """Velas del mercado pedido. Devuelve (velas, mercado_usado).
 
     Intenta el mercado pedido y cae al otro si no responde. Binance bloquea la
@@ -296,7 +304,7 @@ def bajar(simbolo, tf, velas_totales, mercado="futuros"):
     """
     if mercado == "ninjatrader":
         try:
-            velas = _velas_yahoo(simbolo, tf, velas_totales)
+            velas = _velas_yahoo(simbolo, tf, velas_totales, incluir_abierta)
         except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError,
                 OSError, KeyError, ValueError, TypeError, RuntimeError) as e:
             raise RuntimeError(f"No pude bajar {simbolo} {tf} — {e}") from e
@@ -308,7 +316,8 @@ def bajar(simbolo, tf, velas_totales, mercado="futuros"):
     ultimo = None
     for candidato in intentos:
         try:
-            velas = _klines_de(candidato, simbolo, tf, velas_totales)
+            velas = _klines_de(candidato, simbolo, tf, velas_totales,
+                               incluir_abierta)
         except (urllib.error.URLError, urllib.error.HTTPError,
                 TimeoutError, OSError) as e:
             ultimo = f"{candidato}: {e}"
@@ -853,7 +862,7 @@ RECORRIDO_AGOTADO = 1.0
 # gatillo.
 MEDIAS = (7, 25, 99, 200)
 MEDIAS_GATILLO = (25, 99, 200)
-VERSION = 22
+VERSION = 23
 # El RSI del grafico de Binance en el celular es 6, no el 14 de los libros.
 # El MACD es 12, 26, 9: DIF, DEA, y MACD = DIF - DEA.
 RSI_TRADE = 6

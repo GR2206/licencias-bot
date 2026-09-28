@@ -32,6 +32,7 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
+import indicadores as ind
 import zonas
 
 # Los diez de arriba son los de libro mas profundo. Los dieciocho de abajo
@@ -49,7 +50,7 @@ POR_DEFECTO = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
 TFS = ["5m", "15m", "30m", "1h", "4h"]
 # El numero que se ve abajo de la pagina. Si no dice este, el archivo del
 # celular es viejo. Se sube junto con zonas.VERSION.
-VERSION = 22
+VERSION = 23
 
 # Cuantas velas se deja puesta la orden limite. En 15m son 6 horas. Pasado
 # eso, si el precio no toco la entrada, el trade vencio: no es una perdida,
@@ -128,12 +129,35 @@ def _fin(estado, vela, minutos, erres, detalle):
     }
 
 
-def juzgar(fila, velas):
-    """Como salio el trade, mirando solo velas ABIERTAS despues de anotarlo.
+def _velas_desde_el_click(fila, velas):
+    """Precio posterior al click de CALCULAR.
 
-    La vela que estaba en curso cuando se apreto CALCULAR no cuenta: el precio
-    de esa vela ya habia pasado antes de que la orden existiera.
+    La vela que ya estaba abierta en ese momento mezcla el maximo y el minimo
+    de antes de que existiera la orden. De esa solo cuenta el tramo entre el
+    precio anotado y el cierre. Las que abrieron despues cuentan enteras,
+    incluida la que todavia no cerro: el stop se llena adentro de la vela y no
+    espera a que la hora termine.
     """
+    minutos = zonas.MINUTOS.get(fila["tf"], 15)
+    paso = minutos * 60_000
+    anotado = fila["anotado_ms"]
+    ancla = fila.get("precio_al_anotar")
+    salida = []
+    for v in velas:
+        if v.tiempo + paso <= anotado:
+            continue
+        if v.tiempo >= anotado:
+            salida.append(v)
+            continue
+        base = float(ancla) if ancla is not None else v.cierre
+        salida.append(ind.Vela(
+            v.tiempo, base, max(base, v.cierre), min(base, v.cierre),
+            v.cierre, getattr(v, "volumen", 0.0) or 0.0))
+    return salida
+
+
+def juzgar(fila, velas):
+    """Como salio el trade, con el precio que hubo despues de anotarlo."""
     minutos = zonas.MINUTOS.get(fila["tf"], 15)
     anotado = fila["anotado_ms"]
     if velas and velas[0].tiempo > anotado + minutos * 60_000 * 2:
@@ -151,7 +175,7 @@ def juzgar(fila, velas):
     invalida = fila.get("invalida")
     invalida = None if invalida is None else float(invalida)
     riesgo = abs(entrada - stop) or 1e-12
-    posteriores = [v for v in velas if v.tiempo >= anotado]
+    posteriores = _velas_desde_el_click(fila, velas)
     lleno = False
     vistas = 0
 
@@ -287,8 +311,13 @@ def actualizar_bitacora():
             transcurridas = int((ahora - f["anotado_ms"]) / (minutos * 60_000)) + 5
             n = max(VIGENCIA_VELAS + 5, min(2000, transcurridas))
             velas, _ = zonas.bajar(f["simbolo"], f["tf"], n,
-                                   f.get("mercado") or "futuros")
-            cambios[f["id"]] = juzgar(f, velas)
+                                   f.get("mercado") or "futuros",
+                                   incluir_abierta=True)
+            juicio = juzgar(f, velas)
+            if velas:
+                juicio["precio_ahora"] = velas[-1].cierre
+                juicio["precio_visto"] = _cuando(int(time.time() * 1000))
+            cambios[f["id"]] = juicio
         except (RuntimeError, OSError, ValueError) as e:
             cambios[f["id"]] = {"detalle": f"no pude mirar el precio: {e}"}
     with _candado_bit:
@@ -305,7 +334,8 @@ def bitacora_csv(filas):
     buffer = io.StringIO()
     campos = ["anotado", "simbolo", "tf", "lado", "zona_tipo", "entrada",
               "stop", "objetivo", "invalida", "estado", "r", "detalle",
-              "precio_al_anotar", "resuelto", "nacio"]
+              "precio_al_anotar", "precio_ahora", "precio_visto",
+              "resuelto", "nacio"]
     escritor = csv.DictWriter(buffer, fieldnames=campos, extrasaction="ignore")
     escritor.writeheader()
     for f in filas:
@@ -578,6 +608,12 @@ PAGINA = """<!DOCTYPE html>
   .pill.invalidado, .pill.agotado { color:var(--ambar); border-color:var(--ambar); }
   .bLONG { border-left-color:var(--verde); }
   .bSHORT { border-left-color:var(--rojo); }
+  .marca { margin-top:6px; font-weight:700; font-variant-numeric:tabular-nums;
+           padding:6px 8px; border-radius:6px; }
+  .marca.aFavor { color:var(--verde); background:#0d2818;
+                  border:1px solid var(--verde); }
+  .marca.enContra { color:var(--rojo); background:#2d1214;
+                    border:1px solid var(--rojo); }
 </style></head><body>
 <header>
   <h1>Mesa</h1>
@@ -981,6 +1017,21 @@ const PILLS = {pendiente:"pendiente", en_curso:"abierta", tp:"TP",
                sl:"SL", invalidado:"invalidada", agotado:"agotada",
                vencido:"vencio"};
 
+function marcaPrecio(f, dec) {
+  if (f.precio_ahora === null || f.precio_ahora === undefined || f.precio_ahora === "")
+    return "";
+  const px = Number(f.precio_ahora);
+  const visto = f.precio_visto ? ` · ${esc(f.precio_visto)} UTC` : "";
+  if (f.estado !== "en_curso")
+    return `<div class="zDet">precio al actualizar ${fijo(px, dec)}${visto}</div>`;
+  const entrada = Number(f.entrada);
+  const riesgo = Math.abs(entrada - Number(f.stop)) || 1e-12;
+  const favor = f.lado === "SHORT" ? (entrada - px) : (px - entrada);
+  const cls = favor > 0 ? "aFavor" : (favor < 0 ? "enContra" : "");
+  const signo = favor > 0 ? "+" : "";
+  return `<div class="marca ${cls}">ahora ${fijo(px, dec)} · ${signo}${(favor / riesgo).toFixed(2)} R${visto}</div>`;
+}
+
 function pintarBitacora(d) {
   const s = d.resumen || {};
   const rMedio = s.r_medio === null || s.r_medio === undefined
@@ -1005,6 +1056,7 @@ function pintarBitacora(d) {
       <div class="zDet">entrada ${fijo(f.entrada, dec)} · SL ${fijo(f.stop, dec)}
         · TP ${fijo(f.objetivo, dec)} · invalida ${fijo(f.invalida, dec)}</div>
       <div class="zDet">anotado ${esc(f.anotado)} UTC${cuando}</div>
+      ${marcaPrecio(f, dec)}
       <div style="margin-top:4px">${esc(f.detalle || "")}</div>
     </div>`;
   }).join("");
