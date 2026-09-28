@@ -862,7 +862,7 @@ RECORRIDO_AGOTADO = 1.0
 # gatillo.
 MEDIAS = (7, 25, 99, 200)
 MEDIAS_GATILLO = (25, 99, 200)
-VERSION = 23
+VERSION = 24
 # El RSI del grafico de Binance en el celular es 6, no el 14 de los libros.
 # El MACD es 12, 26, 9: DIF, DEA, y MACD = DIF - DEA.
 RSI_TRADE = 6
@@ -943,6 +943,112 @@ def afinar_con_vwap(zona, pl, vwap, atr, precio, rr=3.0,
         "ensanchado": ensanchado,
         "stop_zona_pct": stop_zona_pct,
         "vwap_afino": True,
+    })
+    return pl
+
+
+def _velas_periodo_cerrado(velas, clave_de):
+    """Velas del período anterior al que está en curso. El actual se deja afuera."""
+    if not velas:
+        return []
+    actual = clave_de(velas[-1].tiempo)
+    i = len(velas) - 1
+    while i >= 0 and clave_de(velas[i].tiempo) == actual:
+        i -= 1
+    if i < 0:
+        return []
+    previa = clave_de(velas[i].tiempo)
+    grupo = []
+    while i >= 0 and clave_de(velas[i].tiempo) == previa:
+        grupo.append(velas[i])
+        i -= 1
+    grupo.reverse()
+    return grupo
+
+
+def _niveles_ancla(rito, valor):
+    """Precios de RiTo y del área de valor donde se puede apoyar la entrada."""
+    niveles = []
+    for s in rito or []:
+        niveles.append((f"maximo de {s['nombre']}", s["maximo"]))
+        niveles.append((f"minimo de {s['nombre']}", s["minimo"]))
+    if valor:
+        niveles.append(("VAL", valor.get("val")))
+        niveles.append(("POC", valor.get("poc")))
+        niveles.append(("VAH", valor.get("vah")))
+    return niveles
+
+
+def afinar_con_anclas(zona, pl, niveles, atr, precio, rr=3.0,
+                      costo_pct=0.10, costo_max_r=0.15, colchon=0.25):
+    """Apoya el límite en RiTo o en el área de valor, si caen en la mitad cercana.
+
+    No prenden ni apagan el trade. Entre los precios que están en la mitad de
+    la zona que toca el mercado, se elige el más pegado al borde: es el primero
+    que el retroceso encuentra. La mitad lejana no se usa, para no hundir el
+    límite. Si ese precio deja el stop más corto que la comisión, la entrada
+    se queda donde estaba.
+    """
+    pl = dict(pl)
+    pl["ancla_afino"] = False
+    pl["ancla_nombre"] = None
+    pl["anclas_en_zona"] = []
+    if not niveles:
+        return pl
+
+    bot, top = zona["bot"], zona["top"]
+    if top <= bot:
+        return pl
+    medio = (bot + top) / 2.0
+    largo = zona["direccion"] == 1
+    en_zona = []
+    cerca = []
+    for nombre, nivel in niveles:
+        if nivel is None:
+            continue
+        if not (bot <= nivel <= top):
+            continue
+        en_zona.append(nombre)
+        if largo and medio <= nivel <= top and (not precio or nivel < precio):
+            cerca.append((float(nivel), nombre))
+        elif ((not largo) and bot <= nivel <= medio
+              and (not precio or nivel > precio)):
+            cerca.append((float(nivel), nombre))
+    pl["anclas_en_zona"] = en_zona
+    if not cerca:
+        return pl
+
+    opciones = list(cerca)
+    if pl.get("vwap_afino"):
+        opciones.append((float(pl["entrada"]), "VWAP"))
+    nivel, nombre = max(opciones) if largo else min(opciones)
+    if nombre == "VWAP" or abs(nivel - pl["entrada"]) <= 1e-9:
+        if nombre != "VWAP":
+            pl["ancla_nombre"] = nombre
+        return pl
+    if atr and atr > 0 and DISTANCIA_MAX_ATR > 0 and precio:
+        if abs(nivel - precio) / atr > DISTANCIA_MAX_ATR:
+            return pl
+
+    if largo:
+        stop = zona["bot"] - (atr or 0.0) * colchon
+    else:
+        stop = zona["top"] + (atr or 0.0) * colchon
+    entrada = nivel
+    riesgo_pct = abs(entrada - stop) / entrada * 100 if entrada else 0.0
+    piso_pct = costo_pct / costo_max_r if costo_max_r > 0 else 0.0
+    if 0 < riesgo_pct < piso_pct:
+        return pl
+    riesgo = abs(entrada - stop)
+    objetivo = entrada + riesgo * rr if largo else entrada - riesgo * rr
+    pl.update({
+        "entrada": entrada, "stop": stop, "objetivo": objetivo,
+        "riesgo_pct": riesgo_pct,
+        "costo_r": costo_pct / riesgo_pct if riesgo_pct else 0.0,
+        "ensanchado": False,
+        "stop_zona_pct": riesgo_pct,
+        "ancla_afino": True,
+        "ancla_nombre": nombre,
     })
     return pl
 
@@ -1066,6 +1172,9 @@ def congruencia(zona, ctx, osc=None):
     # del valor. Si ademas 4h o 1h empujan al otro lado, ahi si no hay trade.
     if zona.get("plan", {}).get("vwap_toca"):
         activos.append("la zona toca el VWAP del dia")
+    if zona.get("plan", {}).get("ancla_afino"):
+        activos.append("entrada apoyada en "
+                       + zona["plan"].get("ancla_nombre", "un nivel"))
 
     _, favor, contra = valorar_osciladores(zona["direccion"], osc)
     activos.extend(favor)
@@ -1441,17 +1550,29 @@ def analizar(simbolo, tf="15m", dias=3.0, rr=3.0, costo_max_r=0.15,
     tick = tick_de(simbolo, usado)
     if usado == "ninjatrader":
         vwap = ind.vwap_cme(velas)[-1]
+        periodo_valor = ind.clave_sesion_cme
+        nombre_valor = "la sesion anterior"
     else:
         vwap = ind.vwap_diario(velas)[-1]
+        periodo_valor = lambda ms: ms // 86_400_000
+        nombre_valor = "el dia anterior"
+    rito = ind.sesiones_rito(velas)
+    valor = ind.area_de_valor(
+        _velas_periodo_cerrado(velas, periodo_valor), tick)
+    if valor:
+        valor["periodo"] = nombre_valor
+    niveles = _niveles_ancla(rito, valor)
     osc = lectura_osciladores(velas)
     todas = order_blocks(velas, cfg, desde) + fvgs(velas, desde)
     for z in todas:
         z["puntos"], z["motivos"] = puntaje(z, velas, precio, osc)
         z["plan"] = ajustar_al_tick(
-            afinar_con_vwap(
-                z, plan(z, atr_final, rr, costo_pct=costo_pct,
-                        costo_max_r=costo_max_r),
-                vwap, atr_final, precio, rr, costo_pct, costo_max_r),
+            afinar_con_anclas(
+                z, afinar_con_vwap(
+                    z, plan(z, atr_final, rr, costo_pct=costo_pct,
+                            costo_max_r=costo_max_r),
+                    vwap, atr_final, precio, rr, costo_pct, costo_max_r),
+                niveles, atr_final, precio, rr, costo_pct, costo_max_r),
             z["direccion"], tick, costo_pct)
         if z["plan"].get("contra_vwap"):
             z["puntos"] -= 2
@@ -1459,6 +1580,14 @@ def analizar(simbolo, tf="15m", dias=3.0, rr=3.0, costo_max_r=0.15,
         elif z["plan"].get("vwap_toca"):
             z["puntos"] += 1
             z["motivos"].append("la zona toca el VWAP")
+        if z["plan"].get("ancla_afino"):
+            z["puntos"] += 1
+            z["motivos"].append("la entrada se apoya en "
+                                + z["plan"]["ancla_nombre"])
+        elif z["plan"].get("anclas_en_zona"):
+            z["puntos"] += 1
+            z["motivos"].append("la zona toca "
+                                + " y ".join(z["plan"]["anclas_en_zona"]))
         marcar_agotado(z, velas)
         z["vivo"] = sigue_vivo(z, velas)
         z["operable"], z["motivo_operable"] = operable(z, precio, atr_final,
@@ -1502,6 +1631,8 @@ def analizar(simbolo, tf="15m", dias=3.0, rr=3.0, costo_max_r=0.15,
         "decimales": decimales(precio, tick),
         "vwap_nombre": ("VWAP de la sesión" if usado == "ninjatrader"
                         else "VWAP del día"),
+        "rito": rito,
+        "valor": valor,
         "velas": len(velas), "en_ventana": en_ventana,
         "desde_ms": velas[desde].tiempo, "hasta_ms": velas[-1].tiempo,
         "contexto": ctx,

@@ -140,6 +140,127 @@ def vwap_diario(velas):
     return salida
 
 
+def clave_rito(ms):
+    """Sesión de RiTo en hora de Nueva York, o None entre 17:00 y 18:00.
+
+    Asia 18:00–03:00, Europa 03:00–09:30, Nueva York 09:30–17:00. La de Asia
+    cruza la medianoche: las velas de la madrugada siguen siendo de la Asia
+    que abrió a las 18:00 del día anterior.
+    """
+    local = ms + _ny_offset_ms(ms)
+    dias = int(local // 86_400_000)
+    minuto = int((local % 86_400_000) // 60_000)
+    if minuto >= 18 * 60:
+        return ("Asia", dias)
+    if minuto < 3 * 60:
+        return ("Asia", dias - 1)
+    if minuto < 9 * 60 + 30:
+        return ("Europa", dias)
+    if minuto < 17 * 60:
+        return ("Nueva York", dias)
+    return None
+
+
+def sesiones_rito(velas):
+    """Máximo y mínimo de la última Asia, Europa y Nueva York ya cerradas.
+
+    La sesión que todavía está en curso no entra: su máximo se mueve y una
+    entrada apoyada ahí cambiaría con cada vela.
+    """
+    if not velas:
+        return []
+    grupos = {}
+    for v in velas:
+        clave = clave_rito(v.tiempo)
+        if clave is None:
+            continue
+        g = grupos.get(clave)
+        if g is None:
+            grupos[clave] = {
+                "nombre": clave[0],
+                "dia": clave[1],
+                "maximo": v.maximo,
+                "minimo": v.minimo,
+            }
+        else:
+            g["maximo"] = max(g["maximo"], v.maximo)
+            g["minimo"] = min(g["minimo"], v.minimo)
+    ultima = clave_rito(velas[-1].tiempo)
+    por_nombre = {}
+    for clave, g in grupos.items():
+        if clave == ultima:
+            continue
+        previo = por_nombre.get(g["nombre"])
+        if previo is None or g["dia"] > previo["dia"]:
+            por_nombre[g["nombre"]] = g
+    return [por_nombre[n] for n in ("Asia", "Europa", "Nueva York")
+            if n in por_nombre]
+
+
+def area_de_valor(velas, tick=None, porcentaje=0.70):
+    """POC, VAL y VAH: el rango donde se negoció el 70% del volumen.
+
+    Cada vela reparte su volumen parejo entre el mínimo y el máximo. Sin
+    volumen, la vela cuenta uno: queda un perfil por tiempo, que es lo que
+    se mira cuando el dato no trae contratos. El porcentaje es el del Value
+    Area de NinjaTrader, 70.
+    """
+    if not velas:
+        return None
+    lo = min(v.minimo for v in velas)
+    hi = max(v.maximo for v in velas)
+    if hi < lo:
+        return None
+    span = hi - lo
+    if span <= 0:
+        return {"poc": lo, "val": lo, "vah": hi}
+    if tick and tick > 0 and span / tick <= 400:
+        paso = tick
+    else:
+        paso = span / 80.0
+    n = int(span / paso) + 1
+    if n < 1:
+        return None
+    if n > 400:
+        n = 400
+        paso = span / (n - 1) if n > 1 else span
+    vols = [0.0] * n
+    for v in velas:
+        vol = v.volumen if v.volumen and v.volumen > 0 else 1.0
+        a = int((v.minimo - lo) / paso)
+        b = int((v.maximo - lo) / paso)
+        if a < 0:
+            a = 0
+        if b >= n:
+            b = n - 1
+        if b < a:
+            b = a
+        parte = vol / (b - a + 1)
+        for i in range(a, b + 1):
+            vols[i] += parte
+    total = sum(vols)
+    if total <= 0:
+        return None
+    poc_i = max(range(n), key=lambda i: vols[i])
+    acum = vols[poc_i]
+    lo_i = hi_i = poc_i
+    meta = total * porcentaje
+    while acum < meta and (lo_i > 0 or hi_i < n - 1):
+        abajo = vols[lo_i - 1] if lo_i > 0 else -1.0
+        arriba = vols[hi_i + 1] if hi_i < n - 1 else -1.0
+        if arriba >= abajo:
+            hi_i += 1
+            acum += vols[hi_i]
+        else:
+            lo_i -= 1
+            acum += vols[lo_i]
+    return {
+        "poc": lo + (poc_i + 0.5) * paso,
+        "val": lo + lo_i * paso,
+        "vah": lo + (hi_i + 1) * paso,
+    }
+
+
 def sma(valores, periodo):
     """Media simple. Es la MA del grafico de Binance (MA 7, 25, 99, 200)."""
     salida = [None] * len(valores)

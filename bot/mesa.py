@@ -50,7 +50,7 @@ POR_DEFECTO = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
 TFS = ["5m", "15m", "30m", "1h", "4h"]
 # El numero que se ve abajo de la pagina. Si no dice este, el archivo del
 # celular es viejo. Se sube junto con zonas.VERSION.
-VERSION = 23
+VERSION = 24
 
 # Cuantas velas se deja puesta la orden limite. En 15m son 6 horas. Pasado
 # eso, si el precio no toco la entrada, el trade vencio: no es una perdida,
@@ -413,6 +413,8 @@ def _para_web(a):
             "falta_confluencia": z.get("falta_confluencia") or [],
             "vwap_toca": bool(p.get("vwap_toca")),
             "vwap_afino": bool(p.get("vwap_afino")),
+            "ancla_afino": bool(p.get("ancla_afino")),
+            "ancla_nombre": p.get("ancla_nombre") or "",
         })
 
     ctx = []
@@ -455,6 +457,8 @@ def _para_web(a):
             "nacio_ms": z["tiempo"],
             "confluencia": z.get("confluencia") or [],
             "vwap_afino": bool(p.get("vwap_afino")),
+            "ancla_afino": bool(p.get("ancla_afino")),
+            "ancla_nombre": p.get("ancla_nombre") or "",
             "gatillo": r.get("gatillo") or "",
         }
 
@@ -468,6 +472,14 @@ def _para_web(a):
         "precio": pr(a["precio"]), "ultimo_cierre": pr(a["ultimo_cierre"]),
         "vwap": pr(a.get("vwap")),
         "vwap_nombre": a.get("vwap_nombre") or "VWAP del día",
+        "rito": [{"nombre": s["nombre"], "minimo": pr(s["minimo"]),
+                  "maximo": pr(s["maximo"])} for s in (a.get("rito") or [])],
+        "valor": (None if not a.get("valor") else {
+            "periodo": a["valor"].get("periodo") or "",
+            "val": pr(a["valor"].get("val")),
+            "poc": pr(a["valor"].get("poc")),
+            "vah": pr(a["valor"].get("vah")),
+        }),
         "osciladores": _osciladores_web(a.get("osciladores")),
         "atr": pr(a["atr"]), "atr_pct": round(a["atr_pct"], 2),
         "decimales": d,
@@ -844,7 +856,22 @@ function notaOsciladores(d) {
   return `<div class="panel nota nGris"><b>Valoración.</b> ${esc(partes.join(" · "))}
     en la última vela cerrada de ${esc(d.tf)}. En un largo suman con RSI(6) desde
     50 y MACD positivo; en un corto, al revés. Cada uno vale 2 puntos. Si los
-    dos van en contra del lado, el trade no sale.</div>`;
+    dos van en contra, restan y el trade puede salir igual.</div>`;
+}
+
+function bloqueAnclas(d, dec) {
+  const rito = d.rito || [];
+  const v = d.valor;
+  if (!rito.length && !v) return "";
+  let h = `<h3>RiTo y área de valor</h3><div class="panel nota nGris">`;
+  if (rito.length) {
+    h += rito.map(s => `${esc(s.nombre)} ${fijo(s.minimo, dec)} — ${fijo(s.maximo, dec)}`).join("<br>");
+  }
+  if (v) {
+    h += `<div style="margin-top:4px">Área de valor de ${esc(v.periodo)}:
+      VAL ${fijo(v.val, dec)} · POC ${fijo(v.poc, dec)} · VAH ${fijo(v.vah, dec)}</div>`;
+  }
+  return h + `</div>`;
 }
 
 function pintar(d) {
@@ -899,12 +926,17 @@ function pintar(d) {
         El valor del día cae en la mitad cercana de la zona, así que el límite
         queda ahí y el stop sigue en el borde de la idea.</div>`;
     }
+    if (r.ancla_afino) {
+      h += `<div class="nota nGris"><b>La entrada se apoyó en ${esc(r.ancla_nombre)}.</b>
+        Ese precio cae en la mitad cercana de la zona. El límite queda ahí y
+        el stop sigue en el borde de la idea.</div>`;
+    }
 
     const valor = lineasValor(r.motivos);
     if (valor.length) {
       h += `<div class="nota nGris"><b>Valoración.</b> ${esc(valor.join(" · "))}.
         RSI(6) y el MACD de ${esc(d.tf)} suman o restan 2 puntos cada uno.
-        Si los dos van en contra, este trade no sale.</div>`;
+        Si los dos van en contra, restan y el trade puede salir igual.</div>`;
     }
 
     if (r.gatillo) {
@@ -938,6 +970,8 @@ function pintar(d) {
     h += notaOsciladores(d);
   }
 
+  h += bloqueAnclas(d, dec);
+
   h += `<h3>Temporalidad mayor</h3><div class="ctx">` + d.contexto.map(c => {
     if (c.error) return `<div class="ctxCaja"><span class="ctxTf">${esc(c.tf)}</span>
       <div>${esc(c.error)}</div></div>`;
@@ -963,7 +997,8 @@ function pintar(d) {
         ${fijo(z.stop, dec)} · TP ${fijo(z.objetivo, dec)} · riesgo
         ${z.riesgo_pct}% · costo ${z.costo_r} R${
           z.vwap_afino ? " · entrada afinada al VWAP"
-                       : (z.vwap_toca ? " · toca el VWAP" : "")}</div>
+                       : (z.vwap_toca ? " · toca el VWAP" : "")}${
+          z.ancla_afino ? " · entrada en " + esc(z.ancla_nombre) : ""}</div>
       <div class="zDet" style="margin-top:4px">${
         z.operable ? "✓ " + esc(z.motivo_operable)
                    : "· " + esc(z.motivo_operable)}</div>
@@ -1000,6 +1035,12 @@ function pintar(d) {
     manda es <b>acierto para empatar</b>: entrando al azar con el mismo stop se
     acierta 1/(1+RR), asi que lo que hay que superar son esos puntos, no el 50%.
     Y hasta no tener 30 operaciones anotadas, ninguna racha significa nada.
+    <br><br>
+    RiTo marca el máximo y el mínimo de la última Asia (18:00 a 03:00 de
+    Nueva York), Europa (03:00 a 09:30) y Nueva York (09:30 a 17:00). El área
+    de valor es el 70% del volumen: del día anterior en cripto, de la sesión
+    anterior en un futuro. Si uno de esos precios cae en la mitad cercana de
+    la zona, el límite se apoya ahí. No encienden ni apagan el trade.
     <br><br><b>versión ${esc(d.version_mesa)} · análisis ${
       d.version_zonas ? esc(d.version_zonas) : "sin número (zonas.py viejo)"}</b>
   </div>`;
