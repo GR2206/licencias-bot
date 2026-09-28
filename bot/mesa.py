@@ -50,7 +50,7 @@ POR_DEFECTO = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
 TFS = ["5m", "15m", "30m", "1h", "4h"]
 # El numero que se ve abajo de la pagina. Si no dice este, el archivo del
 # celular es viejo. Se sube junto con zonas.VERSION.
-VERSION = 24
+VERSION = 25
 
 # Cuantas velas se deja puesta la orden limite. En 15m son 6 horas. Pasado
 # eso, si el precio no toco la entrada, el trade vencio: no es una perdida,
@@ -237,6 +237,11 @@ def _vista(filas):
     cerrados = [f for f in orden if f.get("r") is not None]
     tp = sum(1 for f in orden if f.get("estado") == "tp")
     sl = sum(1 for f in orden if f.get("estado") == "sl")
+    for f in orden:
+        if f.get("mercado") == "ninjatrader":
+            contrato = zonas.CONTRATOS.get(f.get("simbolo") or "")
+            if contrato:
+                f["tick"] = contrato["tick"]
     return {
         "filas": orden,
         "resumen": {
@@ -676,7 +681,10 @@ PAGINA = """<!DOCTYPE html>
     <div class="zDet" style="margin-bottom:8px">Cada CALCULAR con trade queda
       anotado aca. Actualizar mira las velas de despues y marca si llego al
       objetivo, al stop, se invalido en el cierre, o la orden vencio sin
-      llenarse. El CSV se baja al celular.</div>
+      llenarse. El CSV se baja al celular. En un trade abierto, 1 R es la
+      distancia de la entrada al stop: +1.42 R quiere decir que el precio ya
+      recorrio 1.42 veces ese riesgo. El % es cuanto se movio el precio. En
+      NinjaTrader tambien se ven los ticks del contrato.</div>
     <div id="bitacoraCuerpo" class="estado">cargando…</div>
     <div class="filaBotones">
       <button id="actualizarBit" type="button">actualizar resultados</button>
@@ -1070,7 +1078,14 @@ function marcaPrecio(f, dec) {
   const favor = f.lado === "SHORT" ? (entrada - px) : (px - entrada);
   const cls = favor > 0 ? "aFavor" : (favor < 0 ? "enContra" : "");
   const signo = favor > 0 ? "+" : "";
-  return `<div class="marca ${cls}">ahora ${fijo(px, dec)} · ${signo}${(favor / riesgo).toFixed(2)} R${visto}</div>`;
+  const erres = `${signo}${(favor / riesgo).toFixed(2)} R`;
+  const pct = `${signo}${(entrada ? favor / entrada * 100 : 0).toFixed(2)}%`;
+  let medio = `${pct} · ${erres}`;
+  if (f.mercado === "ninjatrader" && Number(f.tick) > 0) {
+    const ticks = Math.round(favor / Number(f.tick));
+    medio = `${signo}${ticks} ticks · ${pct} · ${erres}`;
+  }
+  return `<div class="marca ${cls}">ahora ${fijo(px, dec)} · ${medio}${visto}</div>`;
 }
 
 function pintarBitacora(d) {
