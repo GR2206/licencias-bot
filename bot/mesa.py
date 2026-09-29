@@ -50,7 +50,7 @@ POR_DEFECTO = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
 TFS = ["5m", "15m", "30m", "1h", "4h"]
 # El numero que se ve abajo de la pagina. Si no dice este, el archivo del
 # celular es viejo. Se sube junto con zonas.VERSION.
-VERSION = 26
+VERSION = 27
 
 # Cuantas velas se deja puesta la orden limite. En 15m son 6 horas. Pasado
 # eso, si el precio no toco la entrada, el trade vencio: no es una perdida,
@@ -614,6 +614,15 @@ PAGINA = """<!DOCTYPE html>
           display:block; text-align:center; text-decoration:none;
           background:#21262d; color:var(--texto); border:1px solid var(--borde);
           border-radius:8px; padding:12px 8px; font-size:14px; font-family:inherit; }
+  .balance { background:#12171e; border:1px solid var(--borde); border-radius:8px;
+             padding:10px 12px; margin-bottom:10px; }
+  .balNum { font-weight:700; font-variant-numeric:tabular-nums; font-size:18px; }
+  .balNum.aFavor { color:var(--verde); }
+  .balNum.enContra { color:var(--rojo); }
+  details.cerrados { margin-top:8px; }
+  details.cerrados > summary { color:var(--texto); background:#21262d;
+             border:1px solid var(--borde); border-radius:8px; padding:12px;
+             font-size:14px; font-weight:600; }
   .bita { background:#12171e; border:1px solid var(--borde); border-left-width:3px;
           border-radius:8px; padding:10px 12px; margin-bottom:8px; font-size:12.5px; }
   .bTop { display:flex; justify-content:space-between; gap:8px; align-items:center;
@@ -679,15 +688,6 @@ PAGINA = """<!DOCTYPE html>
   <div id="salida"></div>
   <div class="panel" id="bitacora">
     <h3 style="margin-top:0">Bitácora</h3>
-    <div class="zDet" style="margin-bottom:8px">Cada CALCULAR con trade queda
-      anotado aca. Actualizar mira las velas de despues y marca si llego al
-      objetivo, al stop, se invalido en el cierre, o la orden vencio sin
-      llenarse. El CSV se baja al celular. 1 R es la distancia de la entrada
-      al stop. En NinjaTrader el precio se mueve de a tick: es el salto minimo
-      del contrato. El punto es 1.00 del precio. En el Dow, tick y punto son
-      lo mismo. En la plata, el tick es 0.005 y el punto son 200 ticks. El
-      numero entre parentesis es lo que paga un tick o un punto, por un
-      contrato.</div>
     <div id="bitacoraCuerpo" class="estado">cargando…</div>
     <div class="filaBotones">
       <button id="actualizarBit" type="button">actualizar resultados</button>
@@ -1071,8 +1071,35 @@ const PILLS = {pendiente:"pendiente", en_curso:"abierta", tp:"TP",
 
 function plata(n) {
   if (!isFinite(n)) return "";
-  if (Math.abs(n - Math.round(n)) < 1e-6) return "$" + Math.round(n);
-  return "$" + n.toFixed(2);
+  const a = Math.abs(n);
+  const t = Math.abs(a - Math.round(a)) < 1e-6 ? String(Math.round(a)) : a.toFixed(2);
+  return (n < 0 ? "−" : "") + "$" + t;
+}
+
+function plataFirma(n) {
+  if (!isFinite(n) || n === 0) return plata(0);
+  return (n > 0 ? "+" : "") + plata(n);
+}
+
+const CAPITAL_FICTICIO = 10000;
+const R_CRIPTO_USD = 100;
+
+function dolaresDe(f) {
+  const entrada = Number(f.entrada);
+  const riesgo = Math.abs(entrada - Number(f.stop));
+  if (!riesgo) return null;
+  let favor = null;
+  if (f.estado === "en_curso" && f.precio_ahora !== null && f.precio_ahora !== undefined && f.precio_ahora !== "") {
+    const px = Number(f.precio_ahora);
+    favor = f.lado === "SHORT" ? (entrada - px) : (px - entrada);
+  } else if (f.r !== null && f.r !== undefined && f.r !== "") {
+    favor = Number(f.r) * riesgo;
+  } else {
+    return null;
+  }
+  if (f.mercado === "ninjatrader" && Number(f.tick) > 0 && Number(f.dolar_tick) > 0)
+    return (favor / Number(f.tick)) * Number(f.dolar_tick);
+  return (favor / riesgo) * R_CRIPTO_USD;
 }
 
 function fmtMov(n) {
@@ -1120,34 +1147,56 @@ function marcaPrecio(f, dec) {
   return `<div class="marca ${cls}">${encabezado}${medio}${conHora ? visto : ""}</div>`;
 }
 
+function tarjetaTrade(f) {
+  const dec = f.decimales || 2;
+  const cuando = f.resuelto ? ` · resuelto ${esc(f.resuelto)} UTC` : "";
+  return `<div class="bita b${esc(f.lado)}">
+    <div class="bTop"><span>${esc(f.simbolo)} ${esc(f.tf)} ${esc(f.lado)}
+      ${esc(f.zona_tipo)}</span>
+      <span class="pill ${esc(f.estado)}">${esc(PILLS[f.estado] || f.estado)}</span></div>
+    <div class="zDet">entrada ${fijo(f.entrada, dec)} · SL ${fijo(f.stop, dec)}
+      · TP ${fijo(f.objetivo, dec)} · invalida ${fijo(f.invalida, dec)}</div>
+    <div class="zDet">anotado ${esc(f.anotado)} UTC${cuando}</div>
+    ${marcaPrecio(f, dec)}
+    <div style="margin-top:4px">${esc(f.detalle || "")}</div>
+  </div>`;
+}
+
 function pintarBitacora(d) {
-  const s = d.resumen || {};
-  const rMedio = s.r_medio === null || s.r_medio === undefined
-    ? "" : ` · ${s.r_medio} R por trade cerrado`;
-  let h = `<div class="zDet" style="margin-bottom:8px">${s.n || 0} anotados · `
-    + `${s.tp || 0} al TP · ${s.sl || 0} al SL · ${s.en_curso || 0} abiertas · `
-    + `${s.pendiente || 0} pendientes · ${s.invalidado || 0} invalidadas · `
-    + `${s.agotado || 0} agotadas · ${s.vencido || 0} vencidas${rMedio}</div>`;
-  if (!d.filas || !d.filas.length) {
-    h += `<div class="estado">todavia no hay trades. Apreta CALCULAR y el que
+  const filas = d.filas || [];
+  if (!filas.length) {
+    $("#bitacoraCuerpo").innerHTML = `<div class="estado">todavia no hay trades. Apreta CALCULAR y el que
       salga queda aca.</div>`;
-    $("#bitacoraCuerpo").innerHTML = h;
     return;
   }
-  h += d.filas.map(f => {
-    const dec = f.decimales || 2;
-    const cuando = f.resuelto ? ` · resuelto ${esc(f.resuelto)} UTC` : "";
-    return `<div class="bita b${esc(f.lado)}">
-      <div class="bTop"><span>${esc(f.simbolo)} ${esc(f.tf)} ${esc(f.lado)}
-        ${esc(f.zona_tipo)}</span>
-        <span class="pill ${esc(f.estado)}">${esc(PILLS[f.estado] || f.estado)}</span></div>
-      <div class="zDet">entrada ${fijo(f.entrada, dec)} · SL ${fijo(f.stop, dec)}
-        · TP ${fijo(f.objetivo, dec)} · invalida ${fijo(f.invalida, dec)}</div>
-      <div class="zDet">anotado ${esc(f.anotado)} UTC${cuando}</div>
-      ${marcaPrecio(f, dec)}
-      <div style="margin-top:4px">${esc(f.detalle || "")}</div>
-    </div>`;
-  }).join("");
+  const abiertos = filas.filter(f => f.estado === "pendiente" || f.estado === "en_curso");
+  const cerrados = filas.filter(f => f.estado !== "pendiente" && f.estado !== "en_curso");
+  let realizado = 0, flotante = 0;
+  filas.forEach(f => {
+    const usd = dolaresDe(f);
+    if (usd === null) return;
+    if (f.estado === "en_curso") flotante += usd;
+    else realizado += usd;
+  });
+  const balance = CAPITAL_FICTICIO + realizado + flotante;
+  const cls = balance >= CAPITAL_FICTICIO ? "aFavor" : "enContra";
+  let h = `<div class="balance">
+    <div class="bTop"><span>Balance</span>
+      <span class="balNum ${cls}">${plata(balance)}</span></div>
+    <div class="zDet" style="margin-top:4px">arranca en ${plata(CAPITAL_FICTICIO)}
+      · realizado ${plataFirma(realizado)} · abierto ${plataFirma(flotante)}</div>
+    <div class="zDet">futuros a 1 contrato · cripto, 1 R = ${plata(R_CRIPTO_USD)}
+      · ${abiertos.length} en curso · ${cerrados.length} cerrados</div>
+  </div>`;
+  h += abiertos.length
+    ? abiertos.map(tarjetaTrade).join("")
+    : `<div class="estado">no hay trades abiertos.</div>`;
+  if (cerrados.length) {
+    const tp = cerrados.filter(f => f.estado === "tp").length;
+    const sl = cerrados.filter(f => f.estado === "sl").length;
+    h += `<details class="cerrados"><summary>${cerrados.length} cerrados · ${tp} al TP · ${sl} al SL</summary>
+      <div style="margin-top:8px">${cerrados.map(tarjetaTrade).join("")}</div></details>`;
+  }
   $("#bitacoraCuerpo").innerHTML = h;
 }
 
