@@ -94,26 +94,28 @@ MERCADOS = {
 ORDEN_RESPALDO = ["futuros", "spot"]
 
 # Futuros que se grafican en NinjaTrader. El símbolo de la mesa es el del
-# contrato (ES, MNQ) y yahoo es el continuo del frente. El tick es el mínimo
-# que acepta la orden en el exchange.
+# contrato (ES, MNQ) y yahoo es el continuo del frente. El tick es el salto
+# mínimo del precio. dolar es lo que paga ese tick, por un contrato. El punto
+# es 1.00 del precio: en el Dow el tick ya es un punto; en la plata un punto
+# son 200 ticks.
 CONTRATOS = {
-    "ES": {"yahoo": "ES=F", "tick": 0.25, "nombre": "ES · S&P 500"},
-    "NQ": {"yahoo": "NQ=F", "tick": 0.25, "nombre": "NQ · Nasdaq"},
-    "YM": {"yahoo": "YM=F", "tick": 1, "nombre": "YM · Dow"},
-    "RTY": {"yahoo": "RTY=F", "tick": 0.10, "nombre": "RTY · Russell"},
-    "MES": {"yahoo": "MES=F", "tick": 0.25, "nombre": "MES · Micro S&P"},
-    "MNQ": {"yahoo": "MNQ=F", "tick": 0.25, "nombre": "MNQ · Micro Nasdaq"},
-    "MYM": {"yahoo": "MYM=F", "tick": 1, "nombre": "MYM · Micro Dow"},
-    "M2K": {"yahoo": "M2K=F", "tick": 0.10, "nombre": "M2K · Micro Russell"},
-    "CL": {"yahoo": "CL=F", "tick": 0.01, "nombre": "CL · Petróleo"},
-    "MCL": {"yahoo": "MCL=F", "tick": 0.01, "nombre": "MCL · Micro petróleo"},
-    "GC": {"yahoo": "GC=F", "tick": 0.10, "nombre": "GC · Oro"},
-    "MGC": {"yahoo": "MGC=F", "tick": 0.10, "nombre": "MGC · Micro oro"},
-    "SI": {"yahoo": "SI=F", "tick": 0.005, "nombre": "SI · Plata"},
-    "NG": {"yahoo": "NG=F", "tick": 0.001, "nombre": "NG · Gas"},
-    "6E": {"yahoo": "6E=F", "tick": 0.00005, "nombre": "6E · Euro"},
-    "6B": {"yahoo": "6B=F", "tick": 0.0001, "nombre": "6B · Libra"},
-    "6J": {"yahoo": "6J=F", "tick": 0.0000005, "nombre": "6J · Yen"},
+    "ES": {"yahoo": "ES=F", "tick": 0.25, "dolar": 12.50, "nombre": "ES · S&P 500"},
+    "NQ": {"yahoo": "NQ=F", "tick": 0.25, "dolar": 5.00, "nombre": "NQ · Nasdaq"},
+    "YM": {"yahoo": "YM=F", "tick": 1, "dolar": 5.00, "nombre": "YM · Dow"},
+    "RTY": {"yahoo": "RTY=F", "tick": 0.10, "dolar": 5.00, "nombre": "RTY · Russell"},
+    "MES": {"yahoo": "MES=F", "tick": 0.25, "dolar": 1.25, "nombre": "MES · Micro S&P"},
+    "MNQ": {"yahoo": "MNQ=F", "tick": 0.25, "dolar": 0.50, "nombre": "MNQ · Micro Nasdaq"},
+    "MYM": {"yahoo": "MYM=F", "tick": 1, "dolar": 0.50, "nombre": "MYM · Micro Dow"},
+    "M2K": {"yahoo": "M2K=F", "tick": 0.10, "dolar": 0.50, "nombre": "M2K · Micro Russell"},
+    "CL": {"yahoo": "CL=F", "tick": 0.01, "dolar": 10.00, "nombre": "CL · Petróleo"},
+    "MCL": {"yahoo": "MCL=F", "tick": 0.01, "dolar": 1.00, "nombre": "MCL · Micro petróleo"},
+    "GC": {"yahoo": "GC=F", "tick": 0.10, "dolar": 10.00, "nombre": "GC · Oro"},
+    "MGC": {"yahoo": "MGC=F", "tick": 0.10, "dolar": 1.00, "nombre": "MGC · Micro oro"},
+    "SI": {"yahoo": "SI=F", "tick": 0.005, "dolar": 25.00, "nombre": "SI · Plata"},
+    "NG": {"yahoo": "NG=F", "tick": 0.001, "dolar": 10.00, "nombre": "NG · Gas"},
+    "6E": {"yahoo": "6E=F", "tick": 0.00005, "dolar": 6.25, "nombre": "6E · Euro"},
+    "6B": {"yahoo": "6B=F", "tick": 0.0001, "dolar": 6.25, "nombre": "6B · Libra"},
+    "6J": {"yahoo": "6J=F", "tick": 0.0000005, "dolar": 6.25, "nombre": "6J · Yen"},
 }
 
 
@@ -862,7 +864,7 @@ RECORRIDO_AGOTADO = 1.0
 # gatillo.
 MEDIAS = (7, 25, 99, 200)
 MEDIAS_GATILLO = (25, 99, 200)
-VERSION = 25
+VERSION = 26
 # El RSI del grafico de Binance en el celular es 6, no el 14 de los libros.
 # El MACD es 12, 26, 9: DIF, DEA, y MACD = DIF - DEA.
 RSI_TRADE = 6

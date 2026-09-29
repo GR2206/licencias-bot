@@ -50,7 +50,7 @@ POR_DEFECTO = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
 TFS = ["5m", "15m", "30m", "1h", "4h"]
 # El numero que se ve abajo de la pagina. Si no dice este, el archivo del
 # celular es viejo. Se sube junto con zonas.VERSION.
-VERSION = 25
+VERSION = 26
 
 # Cuantas velas se deja puesta la orden limite. En 15m son 6 horas. Pasado
 # eso, si el precio no toco la entrada, el trade vencio: no es una perdida,
@@ -242,6 +242,7 @@ def _vista(filas):
             contrato = zonas.CONTRATOS.get(f.get("simbolo") or "")
             if contrato:
                 f["tick"] = contrato["tick"]
+                f["dolar_tick"] = contrato.get("dolar")
     return {
         "filas": orden,
         "resumen": {
@@ -681,10 +682,12 @@ PAGINA = """<!DOCTYPE html>
     <div class="zDet" style="margin-bottom:8px">Cada CALCULAR con trade queda
       anotado aca. Actualizar mira las velas de despues y marca si llego al
       objetivo, al stop, se invalido en el cierre, o la orden vencio sin
-      llenarse. El CSV se baja al celular. En un trade abierto, 1 R es la
-      distancia de la entrada al stop: +1.42 R quiere decir que el precio ya
-      recorrio 1.42 veces ese riesgo. El % es cuanto se movio el precio. En
-      NinjaTrader tambien se ven los ticks del contrato.</div>
+      llenarse. El CSV se baja al celular. 1 R es la distancia de la entrada
+      al stop. En NinjaTrader el precio se mueve de a tick: es el salto minimo
+      del contrato. El punto es 1.00 del precio. En el Dow, tick y punto son
+      lo mismo. En la plata, el tick es 0.005 y el punto son 200 ticks. El
+      numero entre parentesis es lo que paga un tick o un punto, por un
+      contrato.</div>
     <div id="bitacoraCuerpo" class="estado">cargando…</div>
     <div class="filaBotones">
       <button id="actualizarBit" type="button">actualizar resultados</button>
@@ -1066,26 +1069,55 @@ const PILLS = {pendiente:"pendiente", en_curso:"abierta", tp:"TP",
                sl:"SL", invalidado:"invalidada", agotado:"agotada",
                vencido:"vencio"};
 
+function plata(n) {
+  if (!isFinite(n)) return "";
+  if (Math.abs(n - Math.round(n)) < 1e-6) return "$" + Math.round(n);
+  return "$" + n.toFixed(2);
+}
+
+function fmtMov(n) {
+  if (Math.abs(n - Math.round(n)) < 1e-6) return String(Math.round(n));
+  const t = Math.abs(n) >= 1 ? n.toFixed(2) : n.toFixed(4);
+  return t.replace(/0+$/, "").replace(/\\.$/, "");
+}
+
+function lineaFuturo(favor, f) {
+  const tick = Number(f.tick);
+  const dolar = Number(f.dolar_tick);
+  const ticks = Math.round(favor / tick);
+  const signo = favor > 0 ? "+" : "";
+  return `${signo}${ticks} ticks (${plata(dolar)}) · ${signo}${fmtMov(favor)} puntos (${plata(dolar / tick)})`;
+}
+
 function marcaPrecio(f, dec) {
-  if (f.precio_ahora === null || f.precio_ahora === undefined || f.precio_ahora === "")
-    return "";
-  const px = Number(f.precio_ahora);
   const visto = f.precio_visto ? ` · ${esc(f.precio_visto)} UTC` : "";
-  if (f.estado !== "en_curso")
-    return `<div class="zDet">precio al actualizar ${fijo(px, dec)}${visto}</div>`;
   const entrada = Number(f.entrada);
   const riesgo = Math.abs(entrada - Number(f.stop)) || 1e-12;
-  const favor = f.lado === "SHORT" ? (entrada - px) : (px - entrada);
+  const hayPrecio = f.precio_ahora !== null && f.precio_ahora !== undefined && f.precio_ahora !== "";
+  let favor = null;
+  let encabezado = "";
+  let conHora = false;
+  if (f.estado === "en_curso" && hayPrecio) {
+    const px = Number(f.precio_ahora);
+    favor = f.lado === "SHORT" ? (entrada - px) : (px - entrada);
+    encabezado = `ahora ${fijo(px, dec)} · `;
+    conHora = true;
+  } else if (f.mercado === "ninjatrader" && f.r !== null && f.r !== undefined && f.r !== ""
+             && Number(f.tick) > 0) {
+    favor = Number(f.r) * riesgo;
+  } else if (hayPrecio) {
+    return `<div class="zDet">precio al actualizar ${fijo(Number(f.precio_ahora), dec)}${visto}</div>`;
+  } else {
+    return "";
+  }
   const cls = favor > 0 ? "aFavor" : (favor < 0 ? "enContra" : "");
   const signo = favor > 0 ? "+" : "";
   const erres = `${signo}${(favor / riesgo).toFixed(2)} R`;
-  const pct = `${signo}${(entrada ? favor / entrada * 100 : 0).toFixed(2)}%`;
-  let medio = `${pct} · ${erres}`;
-  if (f.mercado === "ninjatrader" && Number(f.tick) > 0) {
-    const ticks = Math.round(favor / Number(f.tick));
-    medio = `${signo}${ticks} ticks · ${pct} · ${erres}`;
-  }
-  return `<div class="marca ${cls}">ahora ${fijo(px, dec)} · ${medio}${visto}</div>`;
+  const futuro = f.mercado === "ninjatrader" && Number(f.tick) > 0 && Number(f.dolar_tick) > 0;
+  const medio = futuro
+    ? `${lineaFuturo(favor, f)} · ${erres}`
+    : `${signo}${(entrada ? favor / entrada * 100 : 0).toFixed(2)}% · ${erres}`;
+  return `<div class="marca ${cls}">${encabezado}${medio}${conHora ? visto : ""}</div>`;
 }
 
 function pintarBitacora(d) {
