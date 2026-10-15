@@ -50,7 +50,7 @@ POR_DEFECTO = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
 TFS = ["5m", "15m", "30m", "1h", "4h"]
 # El numero que se ve abajo de la pagina. Si no dice este, el archivo del
 # celular es viejo. Se sube junto con zonas.VERSION.
-VERSION = 27
+VERSION = 28
 
 # Cuantas velas se deja puesta la orden limite. En 15m son 6 horas. Pasado
 # eso, si el precio no toco la entrada, el trade vencio: no es una perdida,
@@ -538,6 +538,10 @@ PAGINA = """<!DOCTYPE html>
           border:1px solid var(--azul); border-radius:10px; padding:13px;
           font-size:15px; font-weight:700; letter-spacing:.6px; cursor:pointer; }
   #buscar:disabled { color:var(--suave); border-color:var(--borde); }
+  #correrBusqueda { width:100%; margin-top:2px; background:transparent; color:var(--azul);
+          border:1px solid var(--azul); border-radius:10px; padding:13px;
+          font-size:15px; font-weight:700; letter-spacing:.6px; cursor:pointer; }
+  #correrBusqueda:active { filter:brightness(.9); }
   .giro { width:28px; height:28px; margin:4px auto 10px; border-radius:50%;
           border:3px solid var(--borde); border-top-color:var(--azul);
           animation:girar .8s linear infinite; }
@@ -686,6 +690,37 @@ PAGINA = """<!DOCTYPE html>
     <div id="lista"></div>
   </div>
   <div id="salida"></div>
+  <div class="panel" id="busqueda">
+    <h3 style="margin-top:0">Búsqueda</h3>
+    <div class="campo">
+      <label for="qBusqueda">Símbolo o nombre</label>
+      <input id="qBusqueda" type="search" placeholder="CHZ, oro, NQ…" autocomplete="off" enterkeyhint="search">
+    </div>
+    <div class="rejilla">
+      <div class="campo">
+        <label for="estadoBusqueda">Estado</label>
+        <select id="estadoBusqueda">
+          <option value="">todos</option>
+          <option value="abiertos">abiertos</option>
+          <option value="cerrados">cerrados</option>
+          <option value="en_curso">en curso</option>
+          <option value="pendiente">pendiente</option>
+          <option value="tp">al TP</option>
+          <option value="sl">al SL</option>
+        </select>
+      </div>
+      <div class="campo">
+        <label for="ladoBusqueda">Lado</label>
+        <select id="ladoBusqueda">
+          <option value="">todos</option>
+          <option value="LONG">LONG</option>
+          <option value="SHORT">SHORT</option>
+        </select>
+      </div>
+    </div>
+    <button id="correrBusqueda" type="button">BUSCAR</button>
+    <div id="busquedaCuerpo" class="estado">escribí un símbolo o elegí un estado. Busca en los activos y en la bitácora, también en los cerrados.</div>
+  </div>
   <div class="panel" id="bitacora">
     <h3 style="margin-top:0">Bitácora</h3>
     <div id="bitacoraCuerpo" class="estado">cargando…</div>
@@ -777,6 +812,8 @@ async function calcular() {
 }
 
 function elegir(simbolo) {
+  const casa = (CFG.casas || []).find(c => (c.simbolos || []).some(s => s.id === simbolo));
+  if (casa && $("#casa").value !== casa.id) pintarSimbolos(casa.id);
   const sel = $("#simbolo");
   if ([...sel.options].some(o => o.value === simbolo)) sel.value = simbolo;
   sel.scrollIntoView({block: "center"});
@@ -1162,11 +1199,65 @@ function tarjetaTrade(f) {
   </div>`;
 }
 
+let ULTIMA_BITACORA = {filas: []};
+let BUSQUEDA_HECHA = false;
+
+function filaDeBusqueda(f, q, estado, lado) {
+  if (lado && f.lado !== lado) return false;
+  const abierto = f.estado === "pendiente" || f.estado === "en_curso";
+  if (estado === "abiertos" && !abierto) return false;
+  if (estado === "cerrados" && abierto) return false;
+  if (estado && estado !== "abiertos" && estado !== "cerrados" && f.estado !== estado) return false;
+  if (!q) return true;
+  const texto = [f.simbolo, f.tf, f.lado, f.zona_tipo, f.detalle, f.estado, PILLS[f.estado]]
+    .join(" ").toLowerCase();
+  return texto.indexOf(q) !== -1;
+}
+
+function correrBusqueda() {
+  BUSQUEDA_HECHA = true;
+  const q = $("#qBusqueda").value.trim().toLowerCase();
+  const estado = $("#estadoBusqueda").value;
+  const lado = $("#ladoBusqueda").value;
+  const caja = $("#busquedaCuerpo");
+  if (!q && !estado && !lado) {
+    caja.className = "estado";
+    caja.innerHTML = "escribí un símbolo o elegí un estado. Busca en los activos y en la bitácora, también en los cerrados.";
+    return;
+  }
+  const casa = casaActual();
+  const activos = q ? ((casa && casa.simbolos) || []).filter(s =>
+    s.id.toLowerCase().indexOf(q) !== -1 || String(s.nombre).toLowerCase().indexOf(q) !== -1) : [];
+  const filas = (ULTIMA_BITACORA.filas || []).filter(f => filaDeBusqueda(f, q, estado, lado));
+  let h = "";
+  if (activos.length) {
+    h += `<h3>Activos</h3>` + activos.map(s =>
+      `<button type="button" class="filaTrade" data-sim="${esc(s.id)}">
+        <span>${esc(s.nombre)}</span><span class="zDet">${esc(s.id)}</span>
+      </button>`).join("");
+  }
+  if (filas.length) {
+    h += `<h3>Bitácora · ${filas.length}</h3>` + filas.map(tarjetaTrade).join("");
+  }
+  if (!h) {
+    caja.className = "";
+    caja.innerHTML = `<div class="nota nGris">No hay activos ni trades con esa búsqueda.</div>`;
+    return;
+  }
+  caja.className = "";
+  caja.innerHTML = h;
+  caja.querySelectorAll(".filaTrade").forEach(el => {
+    el.addEventListener("click", () => elegir(el.dataset.sim));
+  });
+}
+
 function pintarBitacora(d) {
-  const filas = d.filas || [];
+  ULTIMA_BITACORA = d || {filas: []};
+  const filas = ULTIMA_BITACORA.filas || [];
   if (!filas.length) {
     $("#bitacoraCuerpo").innerHTML = `<div class="estado">todavia no hay trades. Apreta CALCULAR y el que
       salga queda aca.</div>`;
+    if (BUSQUEDA_HECHA) correrBusqueda();
     return;
   }
   const abiertos = filas.filter(f => f.estado === "pendiente" || f.estado === "en_curso");
@@ -1198,6 +1289,7 @@ function pintarBitacora(d) {
       <div style="margin-top:8px">${cerrados.map(tarjetaTrade).join("")}</div></details>`;
   }
   $("#bitacoraCuerpo").innerHTML = h;
+  if (BUSQUEDA_HECHA) correrBusqueda();
 }
 
 async function cargarBitacora(actualizar) {
@@ -1220,6 +1312,10 @@ $("#casa").addEventListener("change", () => pintarSimbolos($("#casa").value));
 $("#calcular").addEventListener("click", calcular);
 $("#buscar").addEventListener("click", buscar);
 $("#actualizarBit").addEventListener("click", () => cargarBitacora(true));
+$("#correrBusqueda").addEventListener("click", correrBusqueda);
+$("#qBusqueda").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") { e.preventDefault(); correrBusqueda(); }
+});
 inicio();
 cargarBitacora(false);
 </script></body></html>
