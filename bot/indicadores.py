@@ -112,6 +112,40 @@ def vwap_cme(velas):
     return salida
 
 
+def clave_sesion_fx(ms):
+    """Día de forex. Arranca a las 17:00 de Nueva York, el rollover del mercado."""
+    local = ms + _ny_offset_ms(ms)
+    dias = local // 86_400_000
+    hora = (local % 86_400_000) // 3_600_000
+    if hora < 17:
+        dias -= 1
+    return dias
+
+
+def vwap_fx(velas):
+    """VWAP de la sesión de forex, reiniciado a las 17:00 de Nueva York.
+
+    El dato de forex suele venir sin volumen. Cada vela sin volumen pesa uno,
+    así el valor es el precio típico de la sesión y no queda vacío.
+    """
+    salida = [None] * len(velas)
+    sesion = None
+    cum_pv = 0.0
+    cum_v = 0.0
+    for i, v in enumerate(velas):
+        clave = clave_sesion_fx(v.tiempo)
+        if clave != sesion:
+            sesion = clave
+            cum_pv = 0.0
+            cum_v = 0.0
+        vol = v.volumen if v.volumen and v.volumen > 0 else 1.0
+        tipico = (v.maximo + v.minimo + v.cierre) / 3.0
+        cum_pv += tipico * vol
+        cum_v += vol
+        salida[i] = cum_pv / cum_v
+    return salida
+
+
 def vwap_diario(velas):
     """VWAP que reinicia a las 00:00 UTC.
 

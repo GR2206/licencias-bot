@@ -50,7 +50,7 @@ POR_DEFECTO = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
 TFS = ["5m", "15m", "30m", "1h", "4h"]
 # El numero que se ve abajo de la pagina. Si no dice este, el archivo del
 # celular es viejo. Se sube junto con zonas.VERSION.
-VERSION = 27
+VERSION = 28
 
 # Cuantas velas se deja puesta la orden limite. En 15m son 6 horas. Pasado
 # eso, si el precio no toco la entrada, el trade vencio: no es una perdida,
@@ -238,11 +238,17 @@ def _vista(filas):
     tp = sum(1 for f in orden if f.get("estado") == "tp")
     sl = sum(1 for f in orden if f.get("estado") == "sl")
     for f in orden:
-        if f.get("mercado") == "ninjatrader":
-            contrato = zonas.CONTRATOS.get(f.get("simbolo") or "")
+        catalogo = {"ninjatrader": zonas.CONTRATOS,
+                    "exness": zonas.EXNESS}.get(f.get("mercado"))
+        if catalogo:
+            contrato = catalogo.get(f.get("simbolo") or "")
             if contrato:
                 f["tick"] = contrato["tick"]
                 f["dolar_tick"] = contrato.get("dolar")
+                if contrato.get("pip"):
+                    f["pip"] = contrato["pip"]
+                if contrato.get("modo"):
+                    f["modo"] = contrato["modo"]
     return {
         "filas": orden,
         "resumen": {
@@ -654,6 +660,7 @@ PAGINA = """<!DOCTYPE html>
       <select id="casa">
         <option value="binance">Binance</option>
         <option value="ninjatrader">NinjaTrader</option>
+        <option value="exness">Exness</option>
       </select>
     </div>
     <div class="campo">
@@ -711,6 +718,12 @@ function casaActual() {
   return (CFG.casas || []).find(c => c.id === id) || (CFG.casas || [])[0];
 }
 
+function mercadoPedido() {
+  const casa = casaActual();
+  if (casa && casa.id !== "binance" && casa.mercado) return casa.mercado;
+  return $("#mercado").value;
+}
+
 function pintarSimbolos(casaId) {
   const casa = (CFG.casas || []).find(c => c.id === casaId) || (CFG.casas || [])[0];
   if (!casa) {
@@ -761,8 +774,7 @@ async function calcular() {
   const p = new URLSearchParams({
     simbolo: $("#simbolo").value, tf: $("#tf").value,
     dias: $("#dias").value, rr: $("#rr").value,
-    mercado: casaActual() && casaActual().id === "ninjatrader"
-      ? "ninjatrader" : $("#mercado").value,
+    mercado: mercadoPedido(),
   });
   try {
     const d = await (await fetch("api/calcular?" + p)).json();
@@ -815,8 +827,7 @@ async function buscar() {
       const p = new URLSearchParams({
         simbolo: s, tf,
         dias: $("#dias").value, rr: $("#rr").value,
-        mercado: casaActual() && casaActual().id === "ninjatrader"
-          ? "ninjatrader" : $("#mercado").value,
+        mercado: mercadoPedido(),
       });
       const d = await (await fetch("api/buscar?" + p)).json();
       if (d.error) throw new Error(d.error);
@@ -828,7 +839,7 @@ async function buscar() {
     } else {
       $("#lista").innerHTML =
         `<div class="nota nGris" style="margin-top:12px">Revisé ${simbolos.length} ${
-          $("#casa").value === "ninjatrader" ? "activos" : "pares"} en ${esc(tf)}. No encontré ningún trade.</div>`;
+          $("#casa").value === "binance" ? "pares" : "activos"} en ${esc(tf)}. No encontré ningún trade.</div>`;
     }
   } catch (e) {
     $("#lista").innerHTML =
@@ -896,6 +907,15 @@ function pintar(d) {
       de Nueva York. La comisión es 0.02% ida y vuelta: una estimación de la
       comisión del futuro más un tick.</div>`;
   }
+  if (d.mercado === "exness") {
+    h += `<div class="panel nota nGris" style="margin-bottom:12px">
+      <b>Exness.</b> Forex, oro, plata y los índices. Las velas son el precio
+      de mercado, no una cuenta logueada. El VWAP reinicia a las 17:00 de
+      Nueva York. El costo es 0.02% ida y vuelta: una estimación del spread.
+      En la bitácora el dólar es 1 lote estándar. En un cruce, el paso a
+      dólares es aproximado. El oro y la plata siguen el futuro continuo,
+      y el S&P, el Dow y el Nasdaq el índice de contado.</div>`;
+  }
 
   if (d.respaldo) {
     h += `<div class="panel nota nAmbar" style="margin-bottom:12px">
@@ -933,8 +953,10 @@ function pintar(d) {
       <div class="nota nGris">${esc(r.motivos.join("; "))}</div>`;
 
     if (r.vwap_afino) {
+      const deLa = (d.vwap_nombre || "").indexOf("sesión") >= 0
+        ? "de la sesión" : "del día";
       h += `<div class="nota nGris"><b>La entrada se afinó al VWAP.</b>
-        El valor del día cae en la mitad cercana de la zona, así que el límite
+        El valor ${deLa} cae en la mitad cercana de la zona, así que el límite
         queda ahí y el stop sigue en el borde de la idea.</div>`;
     }
     if (r.ancla_afino) {
@@ -1050,7 +1072,7 @@ function pintar(d) {
     RiTo marca el máximo y el mínimo de la última Asia (18:00 a 03:00 de
     Nueva York), Europa (03:00 a 09:30) y Nueva York (09:30 a 17:00). El área
     de valor es el 70% del volumen: del día anterior en cripto, de la sesión
-    anterior en un futuro. Si uno de esos precios cae en la mitad cercana de
+    anterior en un futuro y en Exness. Si uno de esos precios cae en la mitad cercana de
     la zona, el límite se apoya ahí. No encienden ni apagan el trade.
     <br><br><b>versión ${esc(d.version_mesa)} · análisis ${
       d.version_zonas ? esc(d.version_zonas) : "sin número (zonas.py viejo)"}</b>
@@ -1097,9 +1119,14 @@ function dolaresDe(f) {
   } else {
     return null;
   }
-  if (f.mercado === "ninjatrader" && Number(f.tick) > 0 && Number(f.dolar_tick) > 0)
+  if (esCotizado(f))
     return (favor / Number(f.tick)) * Number(f.dolar_tick);
   return (favor / riesgo) * R_CRIPTO_USD;
+}
+
+function esCotizado(f) {
+  return (f.mercado === "ninjatrader" || f.mercado === "exness")
+    && Number(f.tick) > 0 && Number(f.dolar_tick) > 0;
 }
 
 function fmtMov(n) {
@@ -1113,6 +1140,11 @@ function lineaFuturo(favor, f) {
   const dolar = Number(f.dolar_tick);
   const ticks = Math.round(favor / tick);
   const signo = favor > 0 ? "+" : "";
+  if (f.mercado === "exness" && f.modo !== "punto") {
+    const pip = Number(f.pip) > 0 ? Number(f.pip) : tick * 10;
+    const pips = favor / pip;
+    return `${signo}${fmtMov(pips)} pips (${plata(dolar * pip / tick)}) · ${signo}${ticks} ticks (${plata(dolar)})`;
+  }
   return `${signo}${ticks} ticks (${plata(dolar)}) · ${signo}${fmtMov(favor)} puntos (${plata(dolar / tick)})`;
 }
 
@@ -1129,8 +1161,7 @@ function marcaPrecio(f, dec) {
     favor = f.lado === "SHORT" ? (entrada - px) : (px - entrada);
     encabezado = `ahora ${fijo(px, dec)} · `;
     conHora = true;
-  } else if (f.mercado === "ninjatrader" && f.r !== null && f.r !== undefined && f.r !== ""
-             && Number(f.tick) > 0) {
+  } else if (esCotizado(f) && f.r !== null && f.r !== undefined && f.r !== "") {
     favor = Number(f.r) * riesgo;
   } else if (hayPrecio) {
     return `<div class="zDet">precio al actualizar ${fijo(Number(f.precio_ahora), dec)}${visto}</div>`;
@@ -1140,7 +1171,7 @@ function marcaPrecio(f, dec) {
   const cls = favor > 0 ? "aFavor" : (favor < 0 ? "enContra" : "");
   const signo = favor > 0 ? "+" : "";
   const erres = `${signo}${(favor / riesgo).toFixed(2)} R`;
-  const futuro = f.mercado === "ninjatrader" && Number(f.tick) > 0 && Number(f.dolar_tick) > 0;
+  const futuro = esCotizado(f);
   const medio = futuro
     ? `${lineaFuturo(favor, f)} · ${erres}`
     : `${signo}${(entrada ? favor / entrada * 100 : 0).toFixed(2)}% · ${erres}`;
@@ -1185,7 +1216,7 @@ function pintarBitacora(d) {
       <span class="balNum ${cls}">${plata(balance)}</span></div>
     <div class="zDet" style="margin-top:4px">arranca en ${plata(CAPITAL_FICTICIO)}
       · realizado ${plataFirma(realizado)} · abierto ${plataFirma(flotante)}</div>
-    <div class="zDet">futuros a 1 contrato · cripto, 1 R = ${plata(R_CRIPTO_USD)}
+    <div class="zDet">futuros a 1 contrato · Exness a 1 lote estándar · cripto, 1 R = ${plata(R_CRIPTO_USD)}
       · ${abiertos.length} en curso · ${cerrados.length} cerrados</div>
   </div>`;
   h += abiertos.length
@@ -1289,6 +1320,10 @@ def atender(path):
                      "mercado": "ninjatrader",
                      "simbolos": [{"id": s, "nombre": c["nombre"]}
                                   for s, c in zonas.CONTRATOS.items()]},
+                    {"id": "exness", "nombre": "Exness",
+                     "mercado": "exness",
+                     "simbolos": [{"id": s, "nombre": c["nombre"]}
+                                  for s, c in zonas.EXNESS.items()]},
                 ],
             })
         if ruta in ("/api/calcular", "/api/buscar"):
@@ -1301,6 +1336,10 @@ def atender(path):
                     return json_respuesta(
                         {"error": f"{simbolo} no está entre los futuros de NinjaTrader"},
                         400)
+            elif mercado == "exness":
+                if simbolo not in zonas.EXNESS:
+                    return json_respuesta(
+                        {"error": f"{simbolo} no está entre los de Exness"}, 400)
             elif not simbolo.isalnum():
                 return json_respuesta({"error": "simbolo invalido"}, 400)
             tf = uno("tf", Manejador.tf_def)

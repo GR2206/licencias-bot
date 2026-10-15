@@ -20,6 +20,9 @@ Los precios de cripto salen de Binance. Los futuros de NinjaTrader (ES, NQ,
 oro, petroleo y el resto de la lista) salen del contrato continuo de CME, que
 es el grafico del frente. No es la conexion de la plataforma de NinjaTrader:
 es la misma curva, con el tick del contrato y el VWAP de las 18:00 de Nueva York.
+Exness es la tercera: forex, oro, plata y los índices, con el rollover de las
+17:00 de Nueva York. El oro y la plata siguen el futuro continuo, porque el
+spot no publica esta curva.
 
 Y resuelve otro problema: yo puedo LEER precios y calcular donde estan las
 zonas, pero no puedo DIBUJAR en tu grafico de TradingView. El MCP oficial de
@@ -90,6 +93,11 @@ MERCADOS = {
     # 0.10% el piso del stop rechazaría trades que en el futuro sí cierran.
     "ninjatrader": {"base": "", "klines": "", "ticker": "", "costo": 0.02,
                     "nombre": "NinjaTrader · CME continuo"},
+    # Spread de un par líquido en cuenta estándar, medido como porcentaje.
+    # No es la comisión de la cuenta: con el 0.10% de los futuros de cripto
+    # el piso del stop apagaría el forex de 5m y de 15m.
+    "exness": {"base": "", "klines": "", "ticker": "", "costo": 0.02,
+               "nombre": "Exness · forex"},
 }
 ORDEN_RESPALDO = ["futuros", "spot"]
 
@@ -117,6 +125,56 @@ CONTRATOS = {
     "6B": {"yahoo": "6B=F", "tick": 0.0001, "dolar": 6.25, "nombre": "6B · Libra"},
     "6J": {"yahoo": "6J=F", "tick": 0.0000005, "dolar": 6.25, "nombre": "6J · Yen"},
 }
+
+
+def _fx(yahoo, nombre, tick=0.00001, pip=0.0001, dolar=1.0):
+    """Un par de forex. dolar es el USD de un tick, a 1 lote estándar."""
+    return {"yahoo": yahoo, "tick": tick, "pip": pip, "dolar": dolar,
+            "modo": "pip", "nombre": nombre}
+
+
+def _jpy(yahoo, nombre, dolar=0.634):
+    """Par con el yen de cotización. El tick es 0.001 y el pip 0.01."""
+    return {"yahoo": yahoo, "tick": 0.001, "pip": 0.01, "dolar": dolar,
+            "modo": "pip", "nombre": nombre}
+
+
+# Favoritos de la lista, y después los mayores que faltaban. El dólar por tick
+# es de 1 lote estándar con el cambio del 15/10/2026. Contra el dólar es exacto
+# (100.000 × tick). En un cruce se pasa a dólares con USDJPY 157.64, USDCAD
+# 1.420, USDCHF 0.828, GBPUSD 1.325, EURUSD 1.123 y AUDUSD 0.696.
+# El oro y la plata no tienen curva de spot: se leen del futuro continuo.
+# US500, US30 y USTEC son el índice de contado. Su sesión dura unas 6.5 horas,
+# así que hay que pedir más días de calendario para juntar las mismas velas.
+EXNESS = {
+    "XAUUSD": {"yahoo": "GC=F", "tick": 0.01, "pip": 0.01, "dolar": 1.0,
+               "modo": "punto", "horas": 23, "nombre": "XAUUSD · Oro"},
+    "US500": {"yahoo": "^GSPC", "tick": 0.1, "pip": 0.1, "dolar": 0.10,
+              "modo": "punto", "horas": 6.5, "nombre": "US500 · S&P 500"},
+    "EURJPY": _jpy("EURJPY=X", "EURJPY · Euro/Yen"),
+    "NZDAUD": _fx("NZDAUD=X", "NZDAUD · Neozelandés/Australiano", dolar=0.696),
+    "NZDJPY": _jpy("NZDJPY=X", "NZDJPY · Neozelandés/Yen"),
+    "NZDUSD": _fx("NZDUSD=X", "NZDUSD · Neozelandés/Dólar"),
+    "EURUSD": _fx("EURUSD=X", "EURUSD · Euro/Dólar"),
+    "GBPUSD": _fx("GBPUSD=X", "GBPUSD · Libra/Dólar"),
+    "USDJPY": _jpy("USDJPY=X", "USDJPY · Dólar/Yen"),
+    "GBPEUR": _fx("GBPEUR=X", "GBPEUR · Libra/Euro", dolar=1.123),
+    "EURAUD": _fx("EURAUD=X", "EURAUD · Euro/Australiano", dolar=0.696),
+    "EURGBP": _fx("EURGBP=X", "EURGBP · Euro/Libra", dolar=1.325),
+    "GBPAUD": _fx("GBPAUD=X", "GBPAUD · Libra/Australiano", dolar=0.696),
+    "GBPJPY": _jpy("GBPJPY=X", "GBPJPY · Libra/Yen"),
+    "USDCAD": _fx("USDCAD=X", "USDCAD · Dólar/Canadiense", dolar=0.704),
+    "AUDUSD": _fx("AUDUSD=X", "AUDUSD · Australiano/Dólar"),
+    "USDCHF": _fx("USDCHF=X", "USDCHF · Dólar/Franco", dolar=1.208),
+    "AUDJPY": _jpy("AUDJPY=X", "AUDJPY · Australiano/Yen"),
+    "XAGUSD": {"yahoo": "SI=F", "tick": 0.001, "pip": 0.01, "dolar": 5.0,
+               "modo": "punto", "horas": 23, "nombre": "XAGUSD · Plata"},
+    "US30": {"yahoo": "^DJI", "tick": 1, "pip": 1, "dolar": 1.0,
+             "modo": "punto", "horas": 6.5, "nombre": "US30 · Dow"},
+    "USTEC": {"yahoo": "^NDX", "tick": 0.1, "pip": 0.1, "dolar": 0.10,
+              "modo": "punto", "horas": 6.5, "nombre": "USTEC · Nasdaq"},
+}
+_YAHOO = {"ninjatrader": CONTRATOS, "exness": EXNESS}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -239,18 +297,24 @@ def _agrupar(velas, minutos, incluir_abierta=False):
     return [grupos[t0] for t0 in orden if t0 + paso <= ahora]
 
 
-def _velas_yahoo(simbolo, tf, velas_totales, incluir_abierta=False):
-    """Velas del continuo CME. El símbolo es el de NinjaTrader (ES, no ES=F)."""
-    contrato = CONTRATOS.get(simbolo)
+def _velas_yahoo(simbolo, tf, velas_totales, incluir_abierta=False,
+                 mercado="ninjatrader"):
+    """Velas de un símbolo que se lee por la curva pública, no por Binance."""
+    catalogo = _YAHOO.get(mercado) or {}
+    contrato = catalogo.get(simbolo)
     if not contrato:
-        raise RuntimeError(f"{simbolo} no está entre los futuros de NinjaTrader")
+        casa = "Exness" if mercado == "exness" else "NinjaTrader"
+        raise RuntimeError(f"{simbolo} no está entre los de {casa}")
     if tf not in _YAHOO_INTERVALO:
-        raise RuntimeError(f"NinjaTrader no tiene la temporalidad {tf}")
+        casa = "Exness" if mercado == "exness" else "NinjaTrader"
+        raise RuntimeError(f"{casa} no tiene la temporalidad {tf}")
     intervalo, tope = _YAHOO_INTERVALO[tf]
     minutos = 60 if tf == "4h" else MINUTOS[tf]
     pedidas = velas_totales * (4 if tf == "4h" else 1) + 8
-    # La sesión electrónica dura unas 23 horas, no 24.
-    dias = pedidas * minutos / 60.0 / 23.0 + 1
+    # 23 horas es la sesión de un futuro. Un índice de contado opera menos,
+    # y hay que pedir más días para juntar las mismas velas.
+    horas = contrato.get("horas") or 23.0
+    dias = pedidas * minutos / 60.0 / horas + 1
     rango = _rango_yahoo(dias, tope)
     yahoo = urllib.parse.quote(contrato["yahoo"], safe="")
     url = ("https://query1.finance.yahoo.com/v8/finance/chart/"
@@ -304,15 +368,16 @@ def bajar(simbolo, tf, velas_totales, mercado="futuros", incluir_abierta=False):
     realidad se leyo spot es mentirse en el unico numero que decide si la
     operacion cierra.
     """
-    if mercado == "ninjatrader":
+    if mercado in _YAHOO:
         try:
-            velas = _velas_yahoo(simbolo, tf, velas_totales, incluir_abierta)
+            velas = _velas_yahoo(simbolo, tf, velas_totales, incluir_abierta,
+                                 mercado)
         except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError,
                 OSError, KeyError, ValueError, TypeError, RuntimeError) as e:
             raise RuntimeError(f"No pude bajar {simbolo} {tf} — {e}") from e
         if not velas:
             raise RuntimeError(f"No pude bajar {simbolo} {tf} — no vino ninguna vela")
-        return velas, "ninjatrader"
+        return velas, mercado
 
     intentos = [mercado] + [m for m in ORDEN_RESPALDO if m != mercado]
     ultimo = None
@@ -344,8 +409,8 @@ def tick_de(simbolo, mercado):
     if clave in _ticks:
         return _ticks[clave]
 
-    if mercado == "ninjatrader":
-        contrato = CONTRATOS.get(simbolo)
+    if mercado in _YAHOO:
+        contrato = _YAHOO[mercado].get(simbolo)
         tick = contrato["tick"] if contrato else None
         _ticks[clave] = tick if tick and tick > 0 else None
         return _ticks[clave]
@@ -420,12 +485,12 @@ def ajustar_al_tick(pl, direccion, tick, costo_pct):
 
 def precio_vivo(simbolo, mercado):
     """Ultimo precio negociado, que no es el cierre de la ultima vela cerrada."""
-    if mercado == "ninjatrader":
+    if mercado in _YAHOO:
         guardado = _precio_cme.get(simbolo)
         if guardado and time.time() - guardado[0] < 45:
             return guardado[1]
         try:
-            _velas_yahoo(simbolo, "1h", 5)
+            _velas_yahoo(simbolo, "1h", 5, mercado=mercado)
         except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError,
                 OSError, RuntimeError, KeyError, ValueError, TypeError):
             return None
@@ -864,7 +929,7 @@ RECORRIDO_AGOTADO = 1.0
 # gatillo.
 MEDIAS = (7, 25, 99, 200)
 MEDIAS_GATILLO = (25, 99, 200)
-VERSION = 27
+VERSION = 28
 # El RSI del grafico de Binance en el celular es 6, no el 14 de los libros.
 # El MACD es 12, 26, 9: DIF, DEA, y MACD = DIF - DEA.
 RSI_TRADE = 6
@@ -1173,7 +1238,7 @@ def congruencia(zona, ctx, osc=None):
     # retroceso sano deja el RSI y el MACD en contra, y la demanda debajo
     # del valor. Si ademas 4h o 1h empujan al otro lado, ahi si no hay trade.
     if zona.get("plan", {}).get("vwap_toca"):
-        activos.append("la zona toca el VWAP del dia")
+        activos.append("la zona toca el VWAP")
     if zona.get("plan", {}).get("ancla_afino"):
         activos.append("entrada apoyada en "
                        + zona["plan"].get("ancla_nombre", "un nivel"))
@@ -1554,10 +1619,17 @@ def analizar(simbolo, tf="15m", dias=3.0, rr=3.0, costo_max_r=0.15,
         vwap = ind.vwap_cme(velas)[-1]
         periodo_valor = ind.clave_sesion_cme
         nombre_valor = "la sesion anterior"
+        vwap_nombre = "VWAP de la sesión"
+    elif usado == "exness":
+        vwap = ind.vwap_fx(velas)[-1]
+        periodo_valor = ind.clave_sesion_fx
+        nombre_valor = "la sesion anterior"
+        vwap_nombre = "VWAP de la sesión"
     else:
         vwap = ind.vwap_diario(velas)[-1]
         periodo_valor = lambda ms: ms // 86_400_000
         nombre_valor = "el dia anterior"
+        vwap_nombre = "VWAP del día"
     rito = ind.sesiones_rito(velas)
     valor = ind.area_de_valor(
         _velas_periodo_cerrado(velas, periodo_valor), tick)
@@ -1631,8 +1703,7 @@ def analizar(simbolo, tf="15m", dias=3.0, rr=3.0, costo_max_r=0.15,
         "osciladores": osc,
         "atr": atr_final, "atr_pct": atr_pct,
         "decimales": decimales(precio, tick),
-        "vwap_nombre": ("VWAP de la sesión" if usado == "ninjatrader"
-                        else "VWAP del día"),
+        "vwap_nombre": vwap_nombre,
         "rito": rito,
         "valor": valor,
         "velas": len(velas), "en_ventana": en_ventana,
