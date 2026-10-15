@@ -50,7 +50,7 @@ POR_DEFECTO = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
 TFS = ["5m", "15m", "30m", "1h", "4h"]
 # El numero que se ve abajo de la pagina. Si no dice este, el archivo del
 # celular es viejo. Se sube junto con zonas.VERSION.
-VERSION = 28
+VERSION = 29
 
 # Cuantas velas se deja puesta la orden limite. En 15m son 6 horas. Pasado
 # eso, si el precio no toco la entrada, el trade vencio: no es una perdida,
@@ -620,6 +620,7 @@ PAGINA = """<!DOCTYPE html>
           display:block; text-align:center; text-decoration:none;
           background:#21262d; color:var(--texto); border:1px solid var(--borde);
           border-radius:8px; padding:12px 8px; font-size:14px; font-family:inherit; }
+  .filaBotones .ancho { grid-column:1 / -1; }
   .balance { background:#12171e; border:1px solid var(--borde); border-radius:8px;
              padding:10px 12px; margin-bottom:10px; }
   .balNum { font-weight:700; font-variant-numeric:tabular-nums; font-size:18px; }
@@ -695,10 +696,15 @@ PAGINA = """<!DOCTYPE html>
   <div id="salida"></div>
   <div class="panel" id="bitacora">
     <h3 style="margin-top:0">Bitácora</h3>
+    <div class="campo">
+      <label for="capital">Inversión</label>
+      <input id="capital" type="number" inputmode="decimal" value="10000" min="1" step="100">
+    </div>
     <div id="bitacoraCuerpo" class="estado">cargando…</div>
     <div class="filaBotones">
       <button id="actualizarBit" type="button">actualizar resultados</button>
       <a id="bajarCsv" href="api/bitacora.csv">descargar CSV</a>
+      <button id="resetBit" class="ancho" type="button">reiniciar operaciones</button>
     </div>
   </div>
   <div class="pie" style="text-align:center">versión __VERSION__</div>
@@ -1103,8 +1109,26 @@ function plataFirma(n) {
   return (n > 0 ? "+" : "") + plata(n);
 }
 
-const CAPITAL_FICTICIO = 10000;
+const CAPITAL_DEF = 10000;
 const R_CRIPTO_USD = 100;
+let ULTIMA_BIT = null;
+
+function capitalActual() {
+  const n = Number($("#capital").value);
+  if (!isFinite(n) || n <= 0) return CAPITAL_DEF;
+  return n;
+}
+
+function guardarCapital() {
+  try { localStorage.setItem("mesa-capital", String(capitalActual())); } catch (e) {}
+}
+
+function cargarCapital() {
+  try {
+    const g = localStorage.getItem("mesa-capital");
+    if (g && Number(g) > 0) $("#capital").value = g;
+  } catch (e) {}
+}
 
 function dolaresDe(f) {
   const entrada = Number(f.entrada);
@@ -1194,12 +1218,9 @@ function tarjetaTrade(f) {
 }
 
 function pintarBitacora(d) {
+  ULTIMA_BIT = d;
   const filas = d.filas || [];
-  if (!filas.length) {
-    $("#bitacoraCuerpo").innerHTML = `<div class="estado">todavia no hay trades. Apreta CALCULAR y el que
-      salga queda aca.</div>`;
-    return;
-  }
+  const capital = capitalActual();
   const abiertos = filas.filter(f => f.estado === "pendiente" || f.estado === "en_curso");
   const cerrados = filas.filter(f => f.estado !== "pendiente" && f.estado !== "en_curso");
   let realizado = 0, flotante = 0;
@@ -1209,16 +1230,21 @@ function pintarBitacora(d) {
     if (f.estado === "en_curso") flotante += usd;
     else realizado += usd;
   });
-  const balance = CAPITAL_FICTICIO + realizado + flotante;
-  const cls = balance >= CAPITAL_FICTICIO ? "aFavor" : "enContra";
+  const balance = capital + realizado + flotante;
+  const cls = balance >= capital ? "aFavor" : "enContra";
   let h = `<div class="balance">
     <div class="bTop"><span>Balance</span>
       <span class="balNum ${cls}">${plata(balance)}</span></div>
-    <div class="zDet" style="margin-top:4px">arranca en ${plata(CAPITAL_FICTICIO)}
+    <div class="zDet" style="margin-top:4px">arranca en ${plata(capital)}
       · realizado ${plataFirma(realizado)} · abierto ${plataFirma(flotante)}</div>
     <div class="zDet">futuros a 1 contrato · Exness a 1 lote estándar · cripto, 1 R = ${plata(R_CRIPTO_USD)}
       · ${abiertos.length} en curso · ${cerrados.length} cerrados</div>
   </div>`;
+  if (!filas.length) {
+    $("#bitacoraCuerpo").innerHTML = h + `<div class="estado">todavia no hay trades. Apreta CALCULAR y el que
+      salga queda aca.</div>`;
+    return;
+  }
   h += abiertos.length
     ? abiertos.map(tarjetaTrade).join("")
     : `<div class="estado">no hay trades abiertos.</div>`;
@@ -1247,10 +1273,33 @@ async function cargarBitacora(actualizar) {
   }
 }
 
+async function reiniciar() {
+  const cap = capitalActual();
+  if (!confirm("Se borran todas las operaciones. El balance vuelve a arrancar en " + plata(cap) + "."))
+    return;
+  const b = $("#resetBit");
+  b.disabled = true;
+  try {
+    const d = await (await fetch("api/bitacora?reset=1")).json();
+    if (d.error) throw new Error(d.error);
+    pintarBitacora(d);
+  } catch (e) {
+    $("#bitacoraCuerpo").innerHTML =
+      `<div class="nota nRojo">no pude reiniciar: ${esc(e.message)}</div>`;
+  }
+  b.disabled = false;
+}
+
 $("#casa").addEventListener("change", () => pintarSimbolos($("#casa").value));
 $("#calcular").addEventListener("click", calcular);
 $("#buscar").addEventListener("click", buscar);
 $("#actualizarBit").addEventListener("click", () => cargarBitacora(true));
+$("#capital").addEventListener("change", () => {
+  guardarCapital();
+  if (ULTIMA_BIT) pintarBitacora(ULTIMA_BIT);
+});
+$("#resetBit").addEventListener("click", reiniciar);
+cargarCapital();
 inicio();
 cargarBitacora(false);
 </script></body></html>
@@ -1362,6 +1411,10 @@ def atender(path):
             except RuntimeError as e:
                 return json_respuesta({"error": str(e)}, 502)
         if ruta == "/api/bitacora":
+            if uno("reset") == "1":
+                with _candado_bit:
+                    _guardar_bitacora([])
+                    return json_respuesta(_vista([]))
             if uno("actualizar") == "1":
                 return json_respuesta(actualizar_bitacora())
             with _candado_bit:
