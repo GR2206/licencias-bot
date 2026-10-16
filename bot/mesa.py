@@ -50,7 +50,13 @@ POR_DEFECTO = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
 TFS = ["5m", "15m", "30m", "1h", "4h"]
 # El numero que se ve abajo de la pagina. Si no dice este, el archivo del
 # celular es viejo. Se sube junto con zonas.VERSION.
-VERSION = 31
+VERSION = 32
+# En Exness el catálogo cotiza 1 lote estándar. MetaTrader entra con poco:
+# el lote se achica para que la distancia al stop no pase de este tope.
+# NinjaTrader no se parte: sigue en 1 contrato del activo elegido.
+RIESGO_TOPE_USD = 100.0
+LOTE_MICRO = 0.01
+LOTE_NANO = 0.001
 
 # Cuantas velas se deja puesta la orden limite. En 15m son 6 horas. Pasado
 # eso, si el precio no toco la entrada, el trade vencio: no es una perdida,
@@ -267,6 +273,8 @@ def _vista(filas):
                     f["pip"] = contrato["pip"]
                 if contrato.get("modo"):
                     f["modo"] = contrato["modo"]
+        if f.get("mercado") == "exness":
+            f["lote"] = _lote_exness(f)
     return {
         "filas": orden,
         "resumen": {
@@ -319,6 +327,8 @@ def anotar(analisis):
         "resuelto_ms": None,
         "resuelto": "",
     }
+    if fila["mercado"] == "exness":
+        fila["lote"] = _lote_exness(fila)
     with _candado_bit:
         filas = _cargar_bitacora()
         if any(x.get("id") == ident for x in filas):
@@ -327,8 +337,71 @@ def anotar(analisis):
         _guardar_bitacora(filas)
 
 
+def _lote_por_riesgo(riesgo_un_lote):
+    """El lote más grande, de a 0.01, cuyo stop no pasa de RIESGO_TOPE_USD.
+
+    Si 0.01 todavía se pasa, baja de a 0.001. El piso es un nanolote.
+    """
+    uno = float(riesgo_un_lote)
+    if uno <= 0:
+        return LOTE_MICRO
+    if uno <= RIESGO_TOPE_USD:
+        return 1.0
+    crudo = RIESGO_TOPE_USD / uno
+    micro = int(crudo / LOTE_MICRO)
+    if micro >= 1:
+        return micro * LOTE_MICRO
+    nano = int(crudo / LOTE_NANO)
+    if nano >= 1:
+        return nano * LOTE_NANO
+    return LOTE_NANO
+
+
+def _lote_exness(fila):
+    """Lote de MetaTrader. Si la fila ya lo guardó, se respeta."""
+    guardado = fila.get("lote")
+    if guardado:
+        return float(guardado)
+    contrato = zonas.EXNESS.get(fila.get("simbolo") or "")
+    if not contrato or not contrato.get("tick") or contrato.get("dolar") is None:
+        return LOTE_MICRO
+    riesgo = abs(float(fila["entrada"]) - float(fila["stop"]))
+    uno = riesgo / contrato["tick"] * contrato["dolar"]
+    return _lote_por_riesgo(uno)
+
+
+def _normalizar_lotes(filas):
+    """Las filas viejas de Exness se midieron a 1 lote estándar.
+
+    Eso convierte un movimiento chico del oro en miles de dólares. Se les
+    pone el lote chico. Si esa medida las había liquidado, vuelven a abrirse
+    para mirar el precio de nuevo: con el lote real esa liquidación no corre.
+    """
+    cambio = False
+    for f in filas:
+        if f.get("mercado") != "exness" or f.get("lote"):
+            continue
+        if (f.get("estado") == "liquidado"
+                and "liquidó la cuenta" in (f.get("detalle") or "")):
+            f["estado"] = "en_curso"
+            f["r"] = None
+            f.pop("usd", None)
+            f["resuelto_ms"] = None
+            f["resuelto"] = ""
+            f["detalle"] = ("lote chico de Exness: el lote estándar no corre, "
+                            "se vuelve a mirar el precio")
+        f["lote"] = _lote_exness(f)
+        if f.get("peor_precio") is not None:
+            entrada = float(f["entrada"])
+            peor = float(f["peor_precio"])
+            contra = (entrada - peor) if f.get("lado") == "LONG" else (peor - entrada)
+            f["peor_usd"] = round(_usd_de_precio(f, max(0.0, contra)), 2)
+        cambio = True
+    return cambio
+
+
 def _usd_de_precio(fila, favor_precio):
-    """Dólares de un movimiento de precio, a 1 contrato, 1 lote o $100 por R."""
+    """Dólares de un movimiento. NinjaTrader es 1 contrato. Exness, su lote."""
     entrada = float(fila["entrada"])
     stop = float(fila["stop"])
     riesgo = abs(entrada - stop) or 1e-12
@@ -337,7 +410,8 @@ def _usd_de_precio(fila, favor_precio):
     if catalogo:
         contrato = catalogo.get(fila.get("simbolo") or "")
         if contrato and contrato.get("tick") and contrato.get("dolar") is not None:
-            return favor_precio / contrato["tick"] * contrato["dolar"]
+            lote = _lote_exness(fila) if fila.get("mercado") == "exness" else 1.0
+            return favor_precio / contrato["tick"] * contrato["dolar"] * lote
     return favor_precio / riesgo * 100.0
 
 
@@ -486,6 +560,8 @@ def actualizar_bitacora(cuenta=None):
     """Recorre las ordenes abiertas contra las velas y anota como salieron."""
     with _candado_bit:
         filas = _cargar_bitacora()
+        if _normalizar_lotes(filas):
+            _guardar_bitacora(filas)
     cambios = {}
     for f in filas:
         if f.get("estado") not in ("pendiente", "en_curso"):
@@ -523,7 +599,7 @@ def bitacora_csv(filas):
     buffer = io.StringIO()
     campos = ["anotado", "simbolo", "tf", "lado", "zona_tipo", "entrada",
               "stop", "objetivo", "invalida", "estado", "r", "usd",
-              "peor_usd", "detalle", "precio_al_anotar", "precio_ahora",
+              "peor_usd", "lote", "detalle", "precio_al_anotar", "precio_ahora",
               "precio_visto", "resuelto", "nacio"]
     escritor = csv.DictWriter(buffer, fieldnames=campos, extrasaction="ignore")
     escritor.writeheader()
@@ -650,6 +726,18 @@ def _para_web(a):
             "ancla_nombre": p.get("ancla_nombre") or "",
             "gatillo": r.get("gatillo") or "",
         }
+        contrato = {"ninjatrader": zonas.CONTRATOS,
+                    "exness": zonas.EXNESS}.get(a.get("mercado"), {}).get(a.get("simbolo"))
+        if contrato and contrato.get("tick") and contrato.get("dolar") is not None:
+            distancia = abs(p["entrada"] - p["stop"])
+            uno = distancia / contrato["tick"] * contrato["dolar"]
+            if a.get("mercado") == "exness":
+                lote = _lote_por_riesgo(uno)
+                rec["lote"] = lote
+                rec["riesgo_usd"] = round(uno * lote, 2)
+            elif a.get("mercado") == "ninjatrader":
+                rec["contratos"] = 1
+                rec["riesgo_usd"] = round(uno, 2)
 
     return {
         "simbolo": a["simbolo"], "tf": a["tf"], "dias": a["dias"], "rr": a["rr"],
@@ -1088,16 +1176,19 @@ function pintar(d) {
       <b>Futuros de NinjaTrader.</b> Las velas son el contrato continuo de CME,
       el del frente, con la sesión electrónica. El VWAP reinicia a las 18:00
       de Nueva York. La comisión es 0.02% ida y vuelta: una estimación de la
-      comisión del futuro más un tick.</div>`;
+      comisión del futuro más un tick. Acá el dólar es 1 contrato entero.
+      Con capital chico el contrato chico es el micro: MGC, MYM, MES, MNQ.</div>`;
   }
   if (d.mercado === "exness") {
     h += `<div class="panel nota nGris" style="margin-bottom:12px">
       <b>Exness.</b> Forex, oro, plata y los índices. Las velas son el precio
       de mercado, no una cuenta logueada. El VWAP reinicia a las 17:00 de
       Nueva York. El costo es 0.02% ida y vuelta: una estimación del spread.
-      En la bitácora el dólar es 1 lote estándar. En un cruce, el paso a
-      dólares es aproximado. El oro XAUUSD es el contado. La plata sigue el
-      futuro. El S&P, el Dow y el Nasdaq son el índice de contado.</div>`;
+      El lote es el de MetaTrader, achicado para que el stop no pase de
+      ${plata(RIESGO_TOPE)}: en el oro eso es un microlote o un nanolote,
+      no un lote estándar. En un cruce, el paso a dólares es aproximado.
+      El oro XAUUSD es el contado. La plata sigue el futuro. El S&P, el Dow
+      y el Nasdaq son el índice de contado.</div>`;
   }
 
   if (d.respaldo) {
@@ -1124,7 +1215,10 @@ function pintar(d) {
       <div class="cuerpo"><table>
         <tr><td>precio ahora</td><td>${fijo(d.precio, dec)}
             · la entrada esta a ${r.distancia_pct}%</td></tr>
-        <tr><td>riesgo</td><td>${r.riesgo_pct}% del precio · 1:${r.rr_real}</td></tr>
+        <tr><td>riesgo</td><td>${r.riesgo_pct}% del precio · 1:${r.rr_real}${
+          r.lote ? ` · ${fmtLote(r.lote)} lotes · el stop son ${plata(r.riesgo_usd)}`
+          : (r.contratos ? ` · 1 contrato · el stop son ${plata(r.riesgo_usd)}` : "")
+        }</td></tr>
         <tr><td>la comision se lleva</td><td>${r.costo_r} R por operacion</td></tr>
         <tr><td>acierto para empatar</td><td><b>${r.acierto_empate}%</b>
             · al azar da ${r.acierto_azar}%</td></tr>
@@ -1288,6 +1382,22 @@ function plataFirma(n) {
 
 const CAPITAL_DEF = 10000;
 const R_CRIPTO_USD = 100;
+const RIESGO_TOPE = 100;
+
+function tamanoDe(f) {
+  if (f.mercado === "exness") {
+    const l = Number(f.lote);
+    return l > 0 ? l : 0.01;
+  }
+  return 1;
+}
+
+function fmtLote(n) {
+  const x = Math.round(Number(n) * 1000) / 1000;
+  if (!isFinite(x)) return "";
+  if (Math.abs(x - Math.round(x)) < 1e-9) return String(Math.round(x));
+  return String(x);
+}
 let ULTIMA_BIT = null;
 let deposito = CAPITAL_DEF;
 let arranque = CAPITAL_DEF;
@@ -1324,7 +1434,7 @@ function dolaresDe(f) {
     return null;
   }
   if (esCotizado(f))
-    return (favor / Number(f.tick)) * Number(f.dolar_tick);
+    return (favor / Number(f.tick)) * Number(f.dolar_tick) * tamanoDe(f);
   return (favor / riesgo) * R_CRIPTO_USD;
 }
 
@@ -1341,7 +1451,7 @@ function fmtMov(n) {
 
 function lineaFuturo(favor, f) {
   const tick = Number(f.tick);
-  const dolar = Number(f.dolar_tick);
+  const dolar = Number(f.dolar_tick) * tamanoDe(f);
   const ticks = Math.round(favor / tick);
   const signo = favor > 0 ? "+" : "";
   if (f.mercado === "exness" && f.modo !== "punto") {
@@ -1368,7 +1478,7 @@ function marcaPrecio(f, dec) {
   } else if (f.usd !== null && f.usd !== undefined && f.usd !== "") {
     const usd = Number(f.usd);
     favor = esCotizado(f)
-      ? usd * Number(f.tick) / Number(f.dolar_tick)
+      ? usd * Number(f.tick) / (Number(f.dolar_tick) * tamanoDe(f))
       : usd / R_CRIPTO_USD * riesgo;
   } else if (esCotizado(f) && f.r !== null && f.r !== undefined && f.r !== "") {
     favor = Number(f.r) * riesgo;
@@ -1387,6 +1497,17 @@ function marcaPrecio(f, dec) {
   return `<div class="marca ${cls}">${encabezado}${medio}${conHora ? visto : ""}</div>`;
 }
 
+function lineaTamano(f) {
+  if (f.mercado === "exness" && Number(f.lote) > 0) {
+    const riesgo = Math.abs(Number(f.entrada) - Number(f.stop));
+    const usd = riesgo / Number(f.tick) * Number(f.dolar_tick) * Number(f.lote);
+    return `<div class="zDet">Exness ${fmtLote(f.lote)} lotes · el stop arriesga ${plata(usd)}</div>`;
+  }
+  if (f.mercado === "ninjatrader")
+    return `<div class="zDet">NinjaTrader 1 contrato</div>`;
+  return "";
+}
+
 function tarjetaTrade(f) {
   const dec = f.decimales || 2;
   const cuando = f.resuelto ? ` · resuelto ${esc(f.resuelto)} UTC` : "";
@@ -1396,6 +1517,7 @@ function tarjetaTrade(f) {
       <span class="pill ${esc(f.estado)}">${esc(PILLS[f.estado] || f.estado)}</span></div>
     <div class="zDet">entrada ${fijo(f.entrada, dec)} · SL ${fijo(f.stop, dec)}
       · TP ${fijo(f.objetivo, dec)} · invalida ${fijo(f.invalida, dec)}</div>
+    ${lineaTamano(f)}
     <div class="zDet">anotado ${esc(f.anotado)} UTC${cuando}</div>
     ${marcaPrecio(f, dec)}
     <div style="margin-top:4px">${esc(f.detalle || "")}</div>
@@ -1440,7 +1562,7 @@ function pintarBitacora(d) {
     <div class="zDet" style="margin-top:4px">empezaste con ${plata(arranque)}
       · ganado ${plataFirma(t.ganado)} · perdido ${plataFirma(t.perdido)}
       · abierto ${plataFirma(t.flotante)}</div>
-    <div class="zDet">futuros a 1 contrato · Exness a 1 lote estándar · cripto, 1 R = ${plata(R_CRIPTO_USD)}
+    <div class="zDet">NinjaTrader a 1 contrato · Exness en lote chico, stop hasta ${plata(RIESGO_TOPE)} · cripto, 1 R = ${plata(R_CRIPTO_USD)}
       · ${abiertos.length} en curso · ${cerrados.length} cerrados</div>
   </div>`;
   if (!filas.length) {
@@ -1639,7 +1761,10 @@ def atender(path):
                         cuenta = None
                 return json_respuesta(actualizar_bitacora(cuenta))
             with _candado_bit:
-                return json_respuesta(_vista(_cargar_bitacora()))
+                filas = _cargar_bitacora()
+                if _normalizar_lotes(filas):
+                    _guardar_bitacora(filas)
+                return json_respuesta(_vista(filas))
         if ruta == "/api/bitacora.csv":
             vista = actualizar_bitacora()
             return (200, "text/csv; charset=utf-8", bitacora_csv(vista["filas"]),
