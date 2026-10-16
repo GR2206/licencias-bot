@@ -50,13 +50,11 @@ POR_DEFECTO = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
 TFS = ["5m", "15m", "30m", "1h", "4h"]
 # El numero que se ve abajo de la pagina. Si no dice este, el archivo del
 # celular es viejo. Se sube junto con zonas.VERSION.
-VERSION = 32
-# En Exness el catálogo cotiza 1 lote estándar. MetaTrader entra con poco:
-# el lote se achica para que la distancia al stop no pase de este tope.
-# NinjaTrader no se parte: sigue en 1 contrato del activo elegido.
-RIESGO_TOPE_USD = 100.0
-LOTE_MICRO = 0.01
-LOTE_NANO = 0.001
+VERSION = 33
+# Exness, cuenta estándar: el lote lo elige el usuario y el piso es 0.01.
+# El catálogo sigue cotizando 1 lote; el dólar de la bitácora se multiplica
+# por este lote. NinjaTrader no se parte: es 1 contrato del activo elegido.
+LOTE_EXNESS_DEF = 0.01
 
 # Cuantas velas se deja puesta la orden limite. En 15m son 6 horas. Pasado
 # eso, si el precio no toco la entrada, el trade vencio: no es una perdida,
@@ -273,8 +271,8 @@ def _vista(filas):
                     f["pip"] = contrato["pip"]
                 if contrato.get("modo"):
                     f["modo"] = contrato["modo"]
-        if f.get("mercado") == "exness":
-            f["lote"] = _lote_exness(f)
+        if f.get("mercado") == "exness" and not f.get("lote"):
+            f["lote"] = LOTE_EXNESS_DEF
     return {
         "filas": orden,
         "resumen": {
@@ -328,7 +326,8 @@ def anotar(analisis):
         "resuelto": "",
     }
     if fila["mercado"] == "exness":
-        fila["lote"] = _lote_exness(fila)
+        fila["lote"] = _lote_pedido(r.get("lote"))
+        fila["lote_fijo"] = True
     with _candado_bit:
         filas = _cargar_bitacora()
         if any(x.get("id") == ident for x in filas):
@@ -337,49 +336,37 @@ def anotar(analisis):
         _guardar_bitacora(filas)
 
 
-def _lote_por_riesgo(riesgo_un_lote):
-    """El lote más grande, de a 0.01, cuyo stop no pasa de RIESGO_TOPE_USD.
-
-    Si 0.01 todavía se pasa, baja de a 0.001. El piso es un nanolote.
-    """
-    uno = float(riesgo_un_lote)
-    if uno <= 0:
-        return LOTE_MICRO
-    if uno <= RIESGO_TOPE_USD:
-        return 1.0
-    crudo = RIESGO_TOPE_USD / uno
-    micro = int(crudo / LOTE_MICRO)
-    if micro >= 1:
-        return micro * LOTE_MICRO
-    nano = int(crudo / LOTE_NANO)
-    if nano >= 1:
-        return nano * LOTE_NANO
-    return LOTE_NANO
+def _lote_pedido(texto):
+    """Lote de la cuenta estándar. El piso es 0.01 y el paso también."""
+    try:
+        n = float(texto)
+    except (TypeError, ValueError):
+        return LOTE_EXNESS_DEF
+    if n != n:  # NaN
+        return LOTE_EXNESS_DEF
+    n = min(100.0, max(LOTE_EXNESS_DEF, n))
+    pasos = int((n + 1e-9) / LOTE_EXNESS_DEF)
+    return round(pasos * LOTE_EXNESS_DEF, 2)
 
 
-def _lote_exness(fila):
-    """Lote de MetaTrader. Si la fila ya lo guardó, se respeta."""
+def _lote_de_fila(fila):
     guardado = fila.get("lote")
     if guardado:
         return float(guardado)
-    contrato = zonas.EXNESS.get(fila.get("simbolo") or "")
-    if not contrato or not contrato.get("tick") or contrato.get("dolar") is None:
-        return LOTE_MICRO
-    riesgo = abs(float(fila["entrada"]) - float(fila["stop"]))
-    uno = riesgo / contrato["tick"] * contrato["dolar"]
-    return _lote_por_riesgo(uno)
+    return LOTE_EXNESS_DEF
 
 
-def _normalizar_lotes(filas):
-    """Las filas viejas de Exness se midieron a 1 lote estándar.
+def _normalizar_lotes(filas, lote=LOTE_EXNESS_DEF):
+    """Exness queda en el lote de la config, hoy 0.01.
 
-    Eso convierte un movimiento chico del oro en miles de dólares. Se les
-    pone el lote chico. Si esa medida las había liquidado, vuelven a abrirse
-    para mirar el precio de nuevo: con el lote real esa liquidación no corre.
+    Las filas viejas se midieron a 1 lote estándar o a un lote calculado para
+    arriesgar 100 dólares. Ninguna de las dos es la cuenta estándar. Si esa
+    medida las liquidó, se vuelven a mirar con 0.01.
     """
+    lote = _lote_pedido(lote)
     cambio = False
     for f in filas:
-        if f.get("mercado") != "exness" or f.get("lote"):
+        if f.get("mercado") != "exness" or f.get("lote_fijo"):
             continue
         if (f.get("estado") == "liquidado"
                 and "liquidó la cuenta" in (f.get("detalle") or "")):
@@ -388,13 +375,14 @@ def _normalizar_lotes(filas):
             f.pop("usd", None)
             f["resuelto_ms"] = None
             f["resuelto"] = ""
-            f["detalle"] = ("lote chico de Exness: el lote estándar no corre, "
-                            "se vuelve a mirar el precio")
-        f["lote"] = _lote_exness(f)
+            f["detalle"] = ("lote 0.01 de Exness: se vuelve a mirar el precio")
+        f["lote"] = lote
+        f["lote_fijo"] = True
         if f.get("peor_precio") is not None:
             entrada = float(f["entrada"])
             peor = float(f["peor_precio"])
-            contra = (entrada - peor) if f.get("lado") == "LONG" else (peor - entrada)
+            contra = ((entrada - peor) if f.get("lado") == "LONG"
+                      else (peor - entrada))
             f["peor_usd"] = round(_usd_de_precio(f, max(0.0, contra)), 2)
         cambio = True
     return cambio
@@ -410,7 +398,7 @@ def _usd_de_precio(fila, favor_precio):
     if catalogo:
         contrato = catalogo.get(fila.get("simbolo") or "")
         if contrato and contrato.get("tick") and contrato.get("dolar") is not None:
-            lote = _lote_exness(fila) if fila.get("mercado") == "exness" else 1.0
+            lote = _lote_de_fila(fila) if fila.get("mercado") == "exness" else 1.0
             return favor_precio / contrato["tick"] * contrato["dolar"] * lote
     return favor_precio / riesgo * 100.0
 
@@ -556,11 +544,11 @@ def aplicar_liquidacion(filas, deposito, ids_abiertos=None):
         f.pop("_sobreviste", None)
 
 
-def actualizar_bitacora(cuenta=None):
+def actualizar_bitacora(cuenta=None, lote=LOTE_EXNESS_DEF):
     """Recorre las ordenes abiertas contra las velas y anota como salieron."""
     with _candado_bit:
         filas = _cargar_bitacora()
-        if _normalizar_lotes(filas):
+        if _normalizar_lotes(filas, lote):
             _guardar_bitacora(filas)
     cambios = {}
     for f in filas:
@@ -731,11 +719,7 @@ def _para_web(a):
         if contrato and contrato.get("tick") and contrato.get("dolar") is not None:
             distancia = abs(p["entrada"] - p["stop"])
             uno = distancia / contrato["tick"] * contrato["dolar"]
-            if a.get("mercado") == "exness":
-                lote = _lote_por_riesgo(uno)
-                rec["lote"] = lote
-                rec["riesgo_usd"] = round(uno * lote, 2)
-            elif a.get("mercado") == "ninjatrader":
+            if a.get("mercado") == "ninjatrader":
                 rec["contratos"] = 1
                 rec["riesgo_usd"] = round(uno, 2)
 
@@ -946,6 +930,10 @@ PAGINA = """<!DOCTYPE html>
         <label for="rr">Objetivo (1:R)</label>
         <input id="rr" type="number" value="3" min="1" max="10" step="0.5">
       </div>
+      <div class="campo" id="campoLote" style="display:none">
+        <label for="lote">Lote Exness</label>
+        <input id="lote" type="number" inputmode="decimal" value="0.01" min="0.01" max="100" step="0.01">
+      </div>
     </div>
     <div class="campo" id="campoMercado">
       <label for="mercado">Mercado</label>
@@ -1008,6 +996,7 @@ function pintarSimbolos(casaId) {
     s => `<option value="${esc(s.id)}">${esc(s.nombre)}</option>`).join("");
   const esBinance = casa.id === "binance";
   $("#campoMercado").style.display = esBinance ? "" : "none";
+  $("#campoLote").style.display = casa.id === "exness" ? "" : "none";
   if (esBinance && $("#mercado").value !== "futuros" && $("#mercado").value !== "spot") {
     $("#mercado").value = "futuros";
   }
@@ -1047,6 +1036,7 @@ async function calcular() {
     dias: $("#dias").value, rr: $("#rr").value,
     mercado: mercadoPedido(),
   });
+  if (mercadoPedido() === "exness") p.set("lote", String(loteExness()));
   try {
     const d = await (await fetch("api/calcular?" + p)).json();
     $("#salida").innerHTML = d.error
@@ -1176,19 +1166,20 @@ function pintar(d) {
       <b>Futuros de NinjaTrader.</b> Las velas son el contrato continuo de CME,
       el del frente, con la sesión electrónica. El VWAP reinicia a las 18:00
       de Nueva York. La comisión es 0.02% ida y vuelta: una estimación de la
-      comisión del futuro más un tick. Acá el dólar es 1 contrato entero.
-      Con capital chico el contrato chico es el micro: MGC, MYM, MES, MNQ.</div>`;
+      comisión del futuro más un tick. Acá el dólar es 1 contrato del activo
+      elegido. El tick más barato de la lista paga 0.50 dólares: MNQ, MYM y
+      M2K. El micro de oro, MGC, paga 1 dólar por tick.</div>`;
   }
   if (d.mercado === "exness") {
     h += `<div class="panel nota nGris" style="margin-bottom:12px">
       <b>Exness.</b> Forex, oro, plata y los índices. Las velas son el precio
       de mercado, no una cuenta logueada. El VWAP reinicia a las 17:00 de
       Nueva York. El costo es 0.02% ida y vuelta: una estimación del spread.
-      El lote es el de MetaTrader, achicado para que el stop no pase de
-      ${plata(RIESGO_TOPE)}: en el oro eso es un microlote o un nanolote,
-      no un lote estándar. En un cruce, el paso a dólares es aproximado.
-      El oro XAUUSD es el contado. La plata sigue el futuro. El S&P, el Dow
-      y el Nasdaq son el índice de contado.</div>`;
+      Cuenta estándar: el lote es el de arriba, mínimo 0.01. El objetivo es
+      el 1:R de arriba. Con 3, el TP queda a 3 veces la distancia del stop.
+      En un cruce, el paso a dólares es aproximado. El oro XAUUSD es el
+      contado. La plata sigue el futuro. El S&P, el Dow y el Nasdaq son el
+      índice de contado.</div>`;
   }
 
   if (d.respaldo) {
@@ -1382,7 +1373,27 @@ function plataFirma(n) {
 
 const CAPITAL_DEF = 10000;
 const R_CRIPTO_USD = 100;
-const RIESGO_TOPE = 100;
+const LOTE_EXNESS_DEF = 0.01;
+
+function loteExness() {
+  const n = Number($("#lote").value);
+  if (!isFinite(n) || n < LOTE_EXNESS_DEF) return LOTE_EXNESS_DEF;
+  const pasos = Math.floor((n + 1e-9) / LOTE_EXNESS_DEF);
+  return Math.round(pasos * LOTE_EXNESS_DEF * 100) / 100;
+}
+
+function cargarLote() {
+  try {
+    const g = localStorage.getItem("mesa-lote");
+    if (g !== null && Number(g) >= LOTE_EXNESS_DEF) $("#lote").value = String(Number(g));
+  } catch (e) {}
+}
+
+function guardarLote() {
+  const n = loteExness();
+  $("#lote").value = String(n);
+  try { localStorage.setItem("mesa-lote", String(n)); } catch (e) {}
+}
 
 function tamanoDe(f) {
   if (f.mercado === "exness") {
@@ -1562,7 +1573,7 @@ function pintarBitacora(d) {
     <div class="zDet" style="margin-top:4px">empezaste con ${plata(arranque)}
       · ganado ${plataFirma(t.ganado)} · perdido ${plataFirma(t.perdido)}
       · abierto ${plataFirma(t.flotante)}</div>
-    <div class="zDet">NinjaTrader a 1 contrato · Exness en lote chico, stop hasta ${plata(RIESGO_TOPE)} · cripto, 1 R = ${plata(R_CRIPTO_USD)}
+    <div class="zDet">NinjaTrader a 1 contrato · Exness al lote de cada trade (mínimo 0.01) · cripto, 1 R = ${plata(R_CRIPTO_USD)}
       · ${abiertos.length} en curso · ${cerrados.length} cerrados</div>
   </div>`;
   if (!filas.length) {
@@ -1588,7 +1599,10 @@ async function cargarBitacora(actualizar) {
   if (actualizar) caja.innerHTML =
     `<div class="estado">mirando como salieron las ordenes abiertas…</div>`;
   try {
-    const q = actualizar ? ("?actualizar=1&cuenta=" + encodeURIComponent(deposito)) : "";
+    const lote = "&lote=" + encodeURIComponent(loteExness());
+    const q = actualizar
+      ? ("?actualizar=1&cuenta=" + encodeURIComponent(deposito) + lote)
+      : ("?lote=" + encodeURIComponent(loteExness()));
     const d = await (await fetch("api/bitacora" + q)).json();
     if (d.error) {
       caja.innerHTML = `<div class="nota nRojo">${esc(d.error)}</div>`;
@@ -1618,6 +1632,7 @@ async function reiniciar() {
 }
 
 $("#casa").addEventListener("change", () => pintarSimbolos($("#casa").value));
+$("#lote").addEventListener("change", guardarLote);
 $("#calcular").addEventListener("click", calcular);
 $("#buscar").addEventListener("click", buscar);
 $("#actualizarBit").addEventListener("click", () => cargarBitacora(true));
@@ -1637,6 +1652,7 @@ $("#capital").addEventListener("change", () => {
 });
 $("#resetBit").addEventListener("click", reiniciar);
 cargarCapital();
+cargarLote();
 inicio();
 cargarBitacora(false);
 </script></body></html>
@@ -1741,6 +1757,16 @@ def atender(path):
                 if ruta == "/api/calcular":
                     salida = calcular(simbolo, tf, dias, rr, mercado,
                                       Manejador.costo_max_r)
+                    if mercado == "exness":
+                        rec = salida.get("recomendacion")
+                        if rec:
+                            lote_n = _lote_pedido(uno("lote", "0.01"))
+                            rec["lote"] = lote_n
+                            contrato = zonas.EXNESS.get(simbolo) or {}
+                            if contrato.get("tick") and contrato.get("dolar") is not None:
+                                dist = abs(float(rec["entrada"]) - float(rec["stop"]))
+                                rec["riesgo_usd"] = round(
+                                    dist / contrato["tick"] * contrato["dolar"] * lote_n, 2)
                     anotar(salida)
                     return json_respuesta(salida)
                 return json_respuesta(mirar(
@@ -1752,6 +1778,7 @@ def atender(path):
                 with _candado_bit:
                     _guardar_bitacora([])
                     return json_respuesta(_vista([]))
+            lote = _lote_pedido(uno("lote", "0.01"))
             if uno("actualizar") == "1":
                 cuenta = None
                 if uno("cuenta"):
@@ -1759,10 +1786,10 @@ def atender(path):
                         cuenta = float(uno("cuenta"))
                     except ValueError:
                         cuenta = None
-                return json_respuesta(actualizar_bitacora(cuenta))
+                return json_respuesta(actualizar_bitacora(cuenta, lote))
             with _candado_bit:
                 filas = _cargar_bitacora()
-                if _normalizar_lotes(filas):
+                if _normalizar_lotes(filas, lote):
                     _guardar_bitacora(filas)
                 return json_respuesta(_vista(filas))
         if ruta == "/api/bitacora.csv":
