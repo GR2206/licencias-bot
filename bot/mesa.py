@@ -50,7 +50,7 @@ POR_DEFECTO = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
 TFS = ["5m", "15m", "30m", "1h", "4h"]
 # El numero que se ve abajo de la pagina. Si no dice este, el archivo del
 # celular es viejo. Se sube junto con zonas.VERSION.
-VERSION = 30
+VERSION = 31
 
 # Cuantas velas se deja puesta la orden limite. En 15m son 6 horas. Pasado
 # eso, si el precio no toco la entrada, el trade vencio: no es una perdida,
@@ -119,14 +119,19 @@ def _cierre_invalida(largo, vela, invalida):
     return vela.cierre < invalida if largo else vela.cierre > invalida
 
 
-def _fin(estado, vela, minutos, erres, detalle):
-    return {
+def _fin(estado, vela, minutos, erres, detalle, peor=None, peor_ms=None):
+    salida = {
         "estado": estado,
         "r": erres,
         "detalle": detalle,
         "resuelto_ms": vela.tiempo + minutos * 60_000,
         "resuelto": _cuando(vela.tiempo + minutos * 60_000),
     }
+    if peor is not None:
+        salida["peor_precio"] = peor
+    if peor_ms is not None:
+        salida["peor_ms"] = peor_ms
+    return salida
 
 
 def _velas_desde_el_click(fila, velas):
@@ -178,6 +183,15 @@ def juzgar(fila, velas):
     posteriores = _velas_desde_el_click(fila, velas)
     lleno = False
     vistas = 0
+    peor = None
+    peor_ms = None
+
+    def mirar_peor(v):
+        nonlocal peor, peor_ms
+        extremo = v.minimo if largo else v.maximo
+        if peor is None or (largo and extremo < peor) or (not largo and extremo > peor):
+            peor = extremo
+            peor_ms = v.tiempo
 
     for v in posteriores:
         if not lleno:
@@ -193,39 +207,43 @@ def juzgar(fila, velas):
                             "un cierre paso la invalidacion y la orden no se lleno")
             if entro:
                 lleno = True
+                mirar_peor(v)
                 salida = _toque_salida(largo, v, stop, objetivo)
                 if salida == "sl":
                     return _fin("sl", v, minutos, -1.0,
-                                "el precio lleno la orden y toco el stop")
+                                "el precio lleno la orden y toco el stop",
+                                peor, peor_ms)
                 if salida == "tp":
                     return _fin("tp", v, minutos, fila.get("rr_real"),
-                                "el precio llego al objetivo")
+                                "el precio llego al objetivo", peor, peor_ms)
                 if _cierre_invalida(largo, v, invalida):
                     movido = ((v.cierre - entrada) if largo
                               else (entrada - v.cierre))
                     return _fin("invalidado", v, minutos, round(movido / riesgo, 3),
                                 "la orden se lleno y el cierre de esa vela "
-                                "invalido la zona")
+                                "invalido la zona", peor, peor_ms)
                 continue
             if vistas >= VIGENCIA_VELAS:
                 return _fin("vencido", v, minutos, None,
                             f"pasaron {VIGENCIA_VELAS} velas de {fila['tf']} "
                             f"y el limite no se lleno")
         else:
+            mirar_peor(v)
             salida = _toque_salida(largo, v, stop, objetivo)
             if salida == "sl":
-                return _fin("sl", v, minutos, -1.0, "se fue al stop")
+                return _fin("sl", v, minutos, -1.0, "se fue al stop", peor, peor_ms)
             if salida == "tp":
                 return _fin("tp", v, minutos, fila.get("rr_real"),
-                            "llego al objetivo")
+                            "llego al objetivo", peor, peor_ms)
             if _cierre_invalida(largo, v, invalida):
                 movido = (v.cierre - entrada) if largo else (entrada - v.cierre)
                 return _fin("invalidado", v, minutos, round(movido / riesgo, 3),
-                            "el cierre paso la invalidacion con la posicion abierta")
+                            "el cierre paso la invalidacion con la posicion abierta",
+                            peor, peor_ms)
 
     if lleno:
         return {"estado": "en_curso", "r": None, "resuelto_ms": None,
-                "resuelto": "",
+                "resuelto": "", "peor_precio": peor, "peor_ms": peor_ms,
                 "detalle": "la orden se lleno y el trade sigue abierto"}
     return {"estado": "pendiente", "r": None, "resuelto_ms": None,
             "resuelto": "",
@@ -309,8 +327,163 @@ def anotar(analisis):
         _guardar_bitacora(filas)
 
 
-def actualizar_bitacora():
-    """Recorre las ordenes abiertas contra las velas de Binance y anota como salieron."""
+def _usd_de_precio(fila, favor_precio):
+    """Dólares de un movimiento de precio, a 1 contrato, 1 lote o $100 por R."""
+    entrada = float(fila["entrada"])
+    stop = float(fila["stop"])
+    riesgo = abs(entrada - stop) or 1e-12
+    catalogo = {"ninjatrader": zonas.CONTRATOS,
+                "exness": zonas.EXNESS}.get(fila.get("mercado"))
+    if catalogo:
+        contrato = catalogo.get(fila.get("simbolo") or "")
+        if contrato and contrato.get("tick") and contrato.get("dolar") is not None:
+            return favor_precio / contrato["tick"] * contrato["dolar"]
+    return favor_precio / riesgo * 100.0
+
+
+def _usd_cerrado(fila):
+    if fila.get("usd") is not None:
+        return float(fila["usd"])
+    if fila.get("r") is None:
+        return 0.0
+    riesgo = abs(float(fila["entrada"]) - float(fila["stop"])) or 1e-12
+    return _usd_de_precio(fila, float(fila["r"]) * riesgo)
+
+
+def _repartir_centavos(equity, pesos):
+    """Reparte el saldo en centavos. La suma es exactamente el saldo."""
+    n = len(pesos)
+    if n == 0:
+        return []
+    if equity <= 0 or sum(pesos) <= 0:
+        return [0.0] * n
+    centavos = int(round(float(equity) * 100))
+    suma = float(sum(pesos))
+    crudos = [centavos * float(p) / suma for p in pesos]
+    base = [int(c) for c in crudos]
+    resto = centavos - sum(base)
+    orden = sorted(range(n),
+                   key=lambda i: (crudos[i] - base[i], pesos[i]),
+                   reverse=True)
+    for i in orden:
+        if resto <= 0:
+            break
+        if pesos[i] <= 0:
+            continue
+        base[i] += 1
+        resto -= 1
+    if resto > 0:
+        base[max(range(n), key=lambda k: pesos[k])] += resto
+    return [c / 100.0 for c in base]
+
+
+def _marcar_liquidado(f, parte, contra, usd, momento):
+    riesgo = abs(float(f["entrada"]) - float(f["stop"])) or 1e-12
+    if usd > 0 and contra > 0 and parte > 0:
+        favor_precio = -(parte / usd) * contra
+    else:
+        favor_precio = 0.0
+    f["estado"] = "liquidado"
+    f["usd"] = round(-parte, 2)
+    f["r"] = round(favor_precio / riesgo, 3)
+    f["detalle"] = ("el retroceso liquidó la cuenta: la pérdida llegó "
+                    "al saldo y en real no seguía hasta el objetivo")
+    f["resuelto_ms"] = int(momento)
+    f["resuelto"] = _cuando(int(momento))
+    f.pop("_sobreviste", None)
+
+
+def aplicar_liquidacion(filas, deposito, ids_abiertos=None):
+    """Si el retroceso se come lo que había en la cuenta en ese momento, liquida.
+
+    Cuenta en ese momento: el arranque más lo ya cerrado antes del retroceso.
+    Un TP posterior no se suma, porque en real ese dinero todavía no estaba.
+    La pérdida queda topeada en el saldo: la cuenta llega a cero y no a un
+    negativo más grande. El peor precio se guarda para avisar hasta dónde fue.
+    """
+    def candidato(f):
+        if ids_abiertos is not None and f.get("id") not in ids_abiertos:
+            return False
+        if f.get("peor_precio") is None:
+            return False
+        return f.get("estado") in ("en_curso", "tp", "sl", "invalidado")
+
+    candidatos = [f for f in filas if candidato(f)]
+    if not candidatos:
+        return
+
+    def contra_de(f):
+        entrada = float(f["entrada"])
+        peor = float(f["peor_precio"])
+        contra = (entrada - peor) if f.get("lado") == "LONG" else (peor - entrada)
+        return max(0.0, contra)
+
+    grupos = {}
+    for f in candidatos:
+        contra = contra_de(f)
+        usd = _usd_de_precio(f, contra)
+        f["peor_usd"] = round(usd, 2)
+        momento = f.get("peor_ms")
+        if momento is None:
+            momento = f.get("anotado_ms") or 0
+        grupos.setdefault(int(momento), []).append((f, contra, usd))
+
+    def resultado_ya_en_cuenta(f, momento, liquidados):
+        if f in liquidados:
+            ms = f.get("resuelto_ms")
+            if ms is not None and int(ms) <= momento:
+                return _usd_cerrado(f)
+            return None
+        if f in candidatos:
+            if not f.get("_sobreviste") or f.get("estado") == "en_curso":
+                return None
+            ms = f.get("resuelto_ms")
+            if ms is not None and int(ms) < momento:
+                return _usd_cerrado(f)
+            return None
+        if f.get("estado") in ("pendiente", "en_curso", "agotado", "vencido"):
+            return None
+        if f.get("r") is None and f.get("usd") is None:
+            return None
+        ms = f.get("resuelto_ms")
+        if ms is None or int(ms) >= momento:
+            return None
+        return _usd_cerrado(f)
+
+    liquidados = []
+    for momento in sorted(grupos):
+        equity = float(deposito)
+        for f in filas:
+            parte = resultado_ya_en_cuenta(f, momento, liquidados)
+            if parte is not None:
+                equity += parte
+        grupo = grupos[momento]
+        total = sum(usd for _f, _c, usd in grupo)
+        if equity > 0 and int(round(total * 100)) < int(round(equity * 100)):
+            for f, _c, _u in grupo:
+                f["_sobreviste"] = True
+            continue
+        partes = _repartir_centavos(max(equity, 0.0), [usd for _f, _c, usd in grupo])
+        for (f, contra, usd), parte in zip(grupo, partes):
+            _marcar_liquidado(f, parte, contra, usd, momento)
+            liquidados.append(f)
+
+    if liquidados:
+        wipe = min(int(f["resuelto_ms"]) for f in liquidados)
+        for f in candidatos:
+            if f in liquidados or f.get("estado") == "liquidado":
+                continue
+            ms = f.get("resuelto_ms")
+            if f.get("estado") != "en_curso" and ms is not None and int(ms) <= wipe:
+                continue
+            _marcar_liquidado(f, 0.0, 0.0, 0.0, wipe)
+
+    for f in filas:
+        f.pop("_sobreviste", None)
+
+
+def actualizar_bitacora(cuenta=None):
+    """Recorre las ordenes abiertas contra las velas y anota como salieron."""
     with _candado_bit:
         filas = _cargar_bitacora()
     cambios = {}
@@ -334,10 +507,14 @@ def actualizar_bitacora():
             cambios[f["id"]] = {"detalle": f"no pude mirar el precio: {e}"}
     with _candado_bit:
         filas = _cargar_bitacora()
+        abiertos = {f.get("id") for f in filas
+                    if f.get("estado") in ("pendiente", "en_curso")}
         for f in filas:
             nuevo = cambios.get(f.get("id"))
             if nuevo and f.get("estado") in ("pendiente", "en_curso"):
                 f.update(nuevo)
+        if cuenta is not None:
+            aplicar_liquidacion(filas, cuenta, abiertos)
         _guardar_bitacora(filas)
         return _vista(filas)
 
@@ -345,9 +522,9 @@ def actualizar_bitacora():
 def bitacora_csv(filas):
     buffer = io.StringIO()
     campos = ["anotado", "simbolo", "tf", "lado", "zona_tipo", "entrada",
-              "stop", "objetivo", "invalida", "estado", "r", "detalle",
-              "precio_al_anotar", "precio_ahora", "precio_visto",
-              "resuelto", "nacio"]
+              "stop", "objetivo", "invalida", "estado", "r", "usd",
+              "peor_usd", "detalle", "precio_al_anotar", "precio_ahora",
+              "precio_visto", "resuelto", "nacio"]
     escritor = csv.DictWriter(buffer, fieldnames=campos, extrasaction="ignore")
     escritor.writeheader()
     for f in filas:
@@ -637,7 +814,7 @@ PAGINA = """<!DOCTYPE html>
   .pill { font-size:11px; font-weight:700; letter-spacing:.4px; padding:2px 7px;
           border-radius:99px; border:1px solid var(--borde); color:var(--suave); }
   .pill.tp { color:var(--verde); border-color:var(--verde); }
-  .pill.sl { color:var(--rojo); border-color:var(--rojo); }
+  .pill.sl, .pill.liquidado { color:var(--rojo); border-color:var(--rojo); }
   .pill.en_curso { color:var(--azul); border-color:var(--azul); }
   .pill.invalidado, .pill.agotado { color:var(--ambar); border-color:var(--ambar); }
   .bLONG { border-left-color:var(--verde); }
@@ -697,8 +874,8 @@ PAGINA = """<!DOCTYPE html>
   <div class="panel" id="bitacora">
     <h3 style="margin-top:0">Bitácora</h3>
     <div class="campo">
-      <label for="capital">Inversión</label>
-      <input id="capital" type="number" inputmode="decimal" value="10000" min="1" step="100">
+      <label for="capital">Cuenta</label>
+      <input id="capital" type="number" inputmode="decimal" value="10000" min="0" step="100">
     </div>
     <div id="bitacoraCuerpo" class="estado">cargando…</div>
     <div class="filaBotones">
@@ -1094,8 +1271,8 @@ function copiar() {
 }
 
 const PILLS = {pendiente:"pendiente", en_curso:"abierta", tp:"TP",
-               sl:"SL", invalidado:"invalidada", agotado:"agotada",
-               vencido:"vencio"};
+               sl:"SL", liquidado:"liquidada", invalidado:"invalidada",
+               agotado:"agotada", vencido:"vencio"};
 
 function plata(n) {
   if (!isFinite(n)) return "";
@@ -1112,28 +1289,31 @@ function plataFirma(n) {
 const CAPITAL_DEF = 10000;
 const R_CRIPTO_USD = 100;
 let ULTIMA_BIT = null;
-
-function capitalActual() {
-  const n = Number($("#capital").value);
-  if (!isFinite(n) || n <= 0) return CAPITAL_DEF;
-  return n;
-}
-
-function guardarCapital() {
-  try { localStorage.setItem("mesa-capital", String(capitalActual())); } catch (e) {}
-}
+let deposito = CAPITAL_DEF;
+let arranque = CAPITAL_DEF;
 
 function cargarCapital() {
   try {
     const g = localStorage.getItem("mesa-capital");
-    if (g && Number(g) > 0) $("#capital").value = g;
+    const a = localStorage.getItem("mesa-arranque");
+    if (g !== null && isFinite(Number(g))) deposito = Number(g);
+    if (a !== null && Number(a) > 0) arranque = Number(a);
+    else arranque = deposito > 0 ? deposito : CAPITAL_DEF;
+    localStorage.setItem("mesa-arranque", String(arranque));
   } catch (e) {}
+}
+
+function guardarDeposito(n) {
+  deposito = n;
+  try { localStorage.setItem("mesa-capital", String(n)); } catch (e) {}
 }
 
 function dolaresDe(f) {
   const entrada = Number(f.entrada);
   const riesgo = Math.abs(entrada - Number(f.stop));
   if (!riesgo) return null;
+  if (f.estado !== "en_curso" && f.usd !== null && f.usd !== undefined && f.usd !== "")
+    return Number(f.usd);
   let favor = null;
   if (f.estado === "en_curso" && f.precio_ahora !== null && f.precio_ahora !== undefined && f.precio_ahora !== "") {
     const px = Number(f.precio_ahora);
@@ -1185,6 +1365,11 @@ function marcaPrecio(f, dec) {
     favor = f.lado === "SHORT" ? (entrada - px) : (px - entrada);
     encabezado = `ahora ${fijo(px, dec)} · `;
     conHora = true;
+  } else if (f.usd !== null && f.usd !== undefined && f.usd !== "") {
+    const usd = Number(f.usd);
+    favor = esCotizado(f)
+      ? usd * Number(f.tick) / Number(f.dolar_tick)
+      : usd / R_CRIPTO_USD * riesgo;
   } else if (esCotizado(f) && f.r !== null && f.r !== undefined && f.r !== "") {
     favor = Number(f.r) * riesgo;
   } else if (hayPrecio) {
@@ -1214,29 +1399,47 @@ function tarjetaTrade(f) {
     <div class="zDet">anotado ${esc(f.anotado)} UTC${cuando}</div>
     ${marcaPrecio(f, dec)}
     <div style="margin-top:4px">${esc(f.detalle || "")}</div>
+    ${f.peor_usd ? `<div class="zDet">en contra llegó a ${plata(-Math.abs(Number(f.peor_usd)))}</div>` : ""}
   </div>`;
+}
+
+function totalesDe(d) {
+  let ganado = 0, perdido = 0, flotante = 0;
+  (d && d.filas || []).forEach(f => {
+    const usd = dolaresDe(f);
+    if (usd === null) return;
+    if (f.estado === "en_curso") flotante += usd;
+    else if (usd >= 0) ganado += usd;
+    else perdido += usd;
+  });
+  return {ganado, perdido, flotante,
+          realizado: ganado + perdido,
+          cuenta: deposito + ganado + perdido + flotante};
 }
 
 function pintarBitacora(d) {
   ULTIMA_BIT = d;
   const filas = d.filas || [];
-  const capital = capitalActual();
   const abiertos = filas.filter(f => f.estado === "pendiente" || f.estado === "en_curso");
   const cerrados = filas.filter(f => f.estado !== "pendiente" && f.estado !== "en_curso");
-  let realizado = 0, flotante = 0;
-  filas.forEach(f => {
-    const usd = dolaresDe(f);
-    if (usd === null) return;
-    if (f.estado === "en_curso") flotante += usd;
-    else realizado += usd;
-  });
-  const balance = capital + realizado + flotante;
-  const cls = balance >= capital ? "aFavor" : "enContra";
-  let h = `<div class="balance">
-    <div class="bTop"><span>Balance</span>
-      <span class="balNum ${cls}">${plata(balance)}</span></div>
-    <div class="zDet" style="margin-top:4px">arranca en ${plata(capital)}
-      · realizado ${plataFirma(realizado)} · abierto ${plataFirma(flotante)}</div>
+  const t = totalesDe(d);
+  const cls = t.cuenta >= arranque ? "aFavor" : "enContra";
+  if (document.activeElement !== $("#capital")) {
+    $("#capital").value = String(Math.round(t.cuenta * 100) / 100);
+  }
+  const liquidadas = filas.filter(f => f.estado === "liquidado");
+  let h = "";
+  if (liquidadas.length) {
+    h += `<div class="nota nRojo" style="margin-bottom:10px"><b>Cuenta liquidada.</b>
+      El precio fue tan en contra que se comió el saldo. Esas operaciones
+      quedan en pérdida y en real no seguían hasta el objetivo.</div>`;
+  }
+  h += `<div class="balance">
+    <div class="bTop"><span>Cuenta</span>
+      <span class="balNum ${cls}">${plata(t.cuenta)}</span></div>
+    <div class="zDet" style="margin-top:4px">empezaste con ${plata(arranque)}
+      · ganado ${plataFirma(t.ganado)} · perdido ${plataFirma(t.perdido)}
+      · abierto ${plataFirma(t.flotante)}</div>
     <div class="zDet">futuros a 1 contrato · Exness a 1 lote estándar · cripto, 1 R = ${plata(R_CRIPTO_USD)}
       · ${abiertos.length} en curso · ${cerrados.length} cerrados</div>
   </div>`;
@@ -1251,7 +1454,8 @@ function pintarBitacora(d) {
   if (cerrados.length) {
     const tp = cerrados.filter(f => f.estado === "tp").length;
     const sl = cerrados.filter(f => f.estado === "sl").length;
-    h += `<details class="cerrados"><summary>${cerrados.length} cerrados · ${tp} al TP · ${sl} al SL</summary>
+    const liq = cerrados.filter(f => f.estado === "liquidado").length;
+    h += `<details class="cerrados"><summary>${cerrados.length} cerrados · ${tp} al TP · ${sl} al SL${liq ? ` · ${liq} liquidadas` : ""}</summary>
       <div style="margin-top:8px">${cerrados.map(tarjetaTrade).join("")}</div></details>`;
   }
   $("#bitacoraCuerpo").innerHTML = h;
@@ -1262,7 +1466,8 @@ async function cargarBitacora(actualizar) {
   if (actualizar) caja.innerHTML =
     `<div class="estado">mirando como salieron las ordenes abiertas…</div>`;
   try {
-    const d = await (await fetch("api/bitacora" + (actualizar ? "?actualizar=1" : ""))).json();
+    const q = actualizar ? ("?actualizar=1&cuenta=" + encodeURIComponent(deposito)) : "";
+    const d = await (await fetch("api/bitacora" + q)).json();
     if (d.error) {
       caja.innerHTML = `<div class="nota nRojo">${esc(d.error)}</div>`;
       return;
@@ -1274,9 +1479,9 @@ async function cargarBitacora(actualizar) {
 }
 
 async function reiniciar() {
-  const cap = capitalActual();
-  if (!confirm("Se borran todas las operaciones. El balance vuelve a arrancar en " + plata(cap) + "."))
+  if (!confirm("Se borran todas las operaciones. La cuenta vuelve a " + plata(arranque) + "."))
     return;
+  guardarDeposito(arranque);
   const b = $("#resetBit");
   b.disabled = true;
   try {
@@ -1295,7 +1500,17 @@ $("#calcular").addEventListener("click", calcular);
 $("#buscar").addEventListener("click", buscar);
 $("#actualizarBit").addEventListener("click", () => cargarBitacora(true));
 $("#capital").addEventListener("change", () => {
-  guardarCapital();
+  const typed = Number($("#capital").value);
+  if (!isFinite(typed) || typed < 0) return;
+  const t = totalesDe(ULTIMA_BIT);
+  const base = typed - t.realizado - t.flotante;
+  if (Math.abs(t.realizado) < 1e-9 && Math.abs(t.flotante) < 1e-9) {
+    arranque = typed;
+    try { localStorage.setItem("mesa-arranque", String(arranque)); } catch (e) {}
+    guardarDeposito(typed);
+  } else {
+    guardarDeposito(base);
+  }
   if (ULTIMA_BIT) pintarBitacora(ULTIMA_BIT);
 });
 $("#resetBit").addEventListener("click", reiniciar);
@@ -1416,7 +1631,13 @@ def atender(path):
                     _guardar_bitacora([])
                     return json_respuesta(_vista([]))
             if uno("actualizar") == "1":
-                return json_respuesta(actualizar_bitacora())
+                cuenta = None
+                if uno("cuenta"):
+                    try:
+                        cuenta = float(uno("cuenta"))
+                    except ValueError:
+                        cuenta = None
+                return json_respuesta(actualizar_bitacora(cuenta))
             with _candado_bit:
                 return json_respuesta(_vista(_cargar_bitacora()))
         if ruta == "/api/bitacora.csv":
