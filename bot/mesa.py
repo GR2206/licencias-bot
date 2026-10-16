@@ -50,7 +50,7 @@ POR_DEFECTO = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
 TFS = ["5m", "15m", "30m", "1h", "4h"]
 # El numero que se ve abajo de la pagina. Si no dice este, el archivo del
 # celular es viejo. Se sube junto con zonas.VERSION.
-VERSION = 29
+VERSION = 30
 
 # Cuantas velas se deja puesta la orden limite. En 15m son 6 horas. Pasado
 # eso, si el precio no toco la entrada, el trade vencio: no es una perdida,
@@ -919,8 +919,8 @@ function pintar(d) {
       de mercado, no una cuenta logueada. El VWAP reinicia a las 17:00 de
       Nueva York. El costo es 0.02% ida y vuelta: una estimación del spread.
       En la bitácora el dólar es 1 lote estándar. En un cruce, el paso a
-      dólares es aproximado. El oro y la plata siguen el futuro continuo,
-      y el S&P, el Dow y el Nasdaq el índice de contado.</div>`;
+      dólares es aproximado. El oro XAUUSD es el contado. La plata sigue el
+      futuro. El S&P, el Dow y el Nasdaq son el índice de contado.</div>`;
   }
 
   if (d.respaldo) {

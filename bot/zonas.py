@@ -21,8 +21,8 @@ oro, petroleo y el resto de la lista) salen del contrato continuo de CME, que
 es el grafico del frente. No es la conexion de la plataforma de NinjaTrader:
 es la misma curva, con el tick del contrato y el VWAP de las 18:00 de Nueva York.
 Exness es la tercera: forex, oro, plata y los índices, con el rollover de las
-17:00 de Nueva York. El oro y la plata siguen el futuro continuo, porque el
-spot no publica esta curva.
+17:00 de Nueva York. El oro de Exness es el contado. La plata sigue el futuro
+continuo.
 
 Y resuelve otro problema: yo puedo LEER precios y calcular donde estan las
 zonas, pero no puedo DIBUJAR en tu grafico de TradingView. El MCP oficial de
@@ -143,12 +143,13 @@ def _jpy(yahoo, nombre, dolar=0.634):
 # es de 1 lote estándar con el cambio del 15/10/2026. Contra el dólar es exacto
 # (100.000 × tick). En un cruce se pasa a dólares con USDJPY 157.64, USDCAD
 # 1.420, USDCHF 0.828, GBPUSD 1.325, EURUSD 1.123 y AUDUSD 0.696.
-# El oro y la plata no tienen curva de spot: se leen del futuro continuo.
+# XAUUSD es el oro al contado (PAXG, que cotiza junto al gráfico de Exness).
+# La plata no publica contado: sigue el futuro.
 # US500, US30 y USTEC son el índice de contado. Su sesión dura unas 6.5 horas,
 # así que hay que pedir más días de calendario para juntar las mismas velas.
 EXNESS = {
-    "XAUUSD": {"yahoo": "GC=F", "tick": 0.01, "pip": 0.01, "dolar": 1.0,
-               "modo": "punto", "horas": 23, "nombre": "XAUUSD · Oro"},
+    "XAUUSD": {"binance": "PAXGUSDT", "tick": 0.01, "pip": 0.01, "dolar": 1.0,
+               "modo": "punto", "nombre": "XAUUSD · Oro"},
     "US500": {"yahoo": "^GSPC", "tick": 0.1, "pip": 0.1, "dolar": 0.10,
               "modo": "punto", "horas": 6.5, "nombre": "US500 · S&P 500"},
     "EURJPY": _jpy("EURJPY=X", "EURJPY · Euro/Yen"),
@@ -369,9 +370,16 @@ def bajar(simbolo, tf, velas_totales, mercado="futuros", incluir_abierta=False):
     operacion cierra.
     """
     if mercado in _YAHOO:
+        contrato = (_YAHOO.get(mercado) or {}).get(simbolo) or {}
         try:
-            velas = _velas_yahoo(simbolo, tf, velas_totales, incluir_abierta,
-                                 mercado)
+            # El oro de Exness es el contado. El futuro de NinjaTrader cotiza
+            # unos 20 dólares más arriba y abría trades que el gráfico no tocó.
+            if contrato.get("binance"):
+                velas = _klines_de("spot", contrato["binance"], tf,
+                                   velas_totales, incluir_abierta)
+            else:
+                velas = _velas_yahoo(simbolo, tf, velas_totales, incluir_abierta,
+                                     mercado)
         except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError,
                 OSError, KeyError, ValueError, TypeError, RuntimeError) as e:
             raise RuntimeError(f"No pude bajar {simbolo} {tf} — {e}") from e
@@ -486,9 +494,20 @@ def ajustar_al_tick(pl, direccion, tick, costo_pct):
 def precio_vivo(simbolo, mercado):
     """Ultimo precio negociado, que no es el cierre de la ultima vela cerrada."""
     if mercado in _YAHOO:
+        contrato = (_YAHOO.get(mercado) or {}).get(simbolo) or {}
         guardado = _precio_cme.get(simbolo)
         if guardado and time.time() - guardado[0] < 45:
             return guardado[1]
+        if contrato.get("binance"):
+            try:
+                px = float(_pedir(
+                    f"{ESPEJO}/api/v3/ticker/price?symbol={contrato['binance']}",
+                    15)["price"])
+            except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError,
+                    OSError, KeyError, ValueError, TypeError):
+                return None
+            _precio_cme[simbolo] = (time.time(), px)
+            return px
         try:
             _velas_yahoo(simbolo, "1h", 5, mercado=mercado)
         except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError,
@@ -929,7 +948,7 @@ RECORRIDO_AGOTADO = 1.0
 # gatillo.
 MEDIAS = (7, 25, 99, 200)
 MEDIAS_GATILLO = (25, 99, 200)
-VERSION = 29
+VERSION = 30
 # El RSI del grafico de Binance en el celular es 6, no el 14 de los libros.
 # El MACD es 12, 26, 9: DIF, DEA, y MACD = DIF - DEA.
 RSI_TRADE = 6
