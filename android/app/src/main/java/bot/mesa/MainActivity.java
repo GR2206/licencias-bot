@@ -1,8 +1,11 @@
 package bot.mesa;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.os.Bundle;
 import android.webkit.JavascriptInterface;
+import android.webkit.JsResult;
+import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
@@ -30,6 +33,30 @@ public class MainActivity extends Activity {
         ajustes.setDomStorageEnabled(true);
 
         web.addJavascriptInterface(new Puente(), "Mesa");
+        web.setWebChromeClient(new WebChromeClient() {
+            @Override
+            public boolean onJsAlert(WebView view, String url, String message, JsResult result) {
+                new AlertDialog.Builder(MainActivity.this)
+                        .setMessage(message)
+                        .setPositiveButton("Aceptar", (d, w) -> result.confirm())
+                        .setOnCancelListener(d -> result.confirm())
+                        .create()
+                        .show();
+                return true;
+            }
+
+            @Override
+            public boolean onJsConfirm(WebView view, String url, String message, JsResult result) {
+                new AlertDialog.Builder(MainActivity.this)
+                        .setMessage(message)
+                        .setPositiveButton("Aceptar", (d, w) -> result.confirm())
+                        .setNegativeButton("Cancelar", (d, w) -> result.cancel())
+                        .setOnCancelListener(d -> result.cancel())
+                        .create()
+                        .show();
+                return true;
+            }
+        });
 
         WebViewAssetLoader loader = new WebViewAssetLoader.Builder()
                 .addPathHandler("/assets/", new WebViewAssetLoader.AssetsPathHandler(this))

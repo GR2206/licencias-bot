@@ -50,7 +50,7 @@ POR_DEFECTO = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
 TFS = ["5m", "15m", "30m", "1h", "4h"]
 # El numero que se ve abajo de la pagina. Si no dice este, el archivo del
 # celular es viejo. Se sube junto con zonas.VERSION.
-VERSION = 39
+VERSION = 40
 # Exness, cuenta estándar: el lote lo elige el usuario y el piso es 0.01.
 # El catálogo sigue cotizando 1 lote; el dólar de la bitácora se multiplica
 # por este lote. NinjaTrader no se parte: es 1 contrato del activo elegido.
@@ -1895,14 +1895,31 @@ async function cargarBitacora(actualizar) {
   }
 }
 
+function dejarEnCero() {
+  arranque = 0;
+  deposito = 0;
+  try {
+    localStorage.setItem("mesa-bitacora", "[]");
+    localStorage.setItem("mesa-capital", "0");
+    localStorage.setItem("mesa-arranque", "0");
+    localStorage.removeItem("mesa-lote");
+    localStorage.removeItem("mesa-palanca");
+    localStorage.removeItem("mesa-margen");
+  } catch (e) {}
+  $("#lote").value = "0.01";
+  $("#palanca").value = "10";
+  $("#margen").value = "10";
+  $("#rr").value = "3";
+  $("#dias").value = "3";
+  $("#salida").innerHTML = "";
+  $("#lista").innerHTML = "";
+  pintarBitacora({filas: []});
+}
+
 async function sacarTrade(id) {
-  const f = ((ULTIMA_BIT && ULTIMA_BIT.filas) || []).find(x => x.id === id);
-  if (!f) return;
-  const verbo = f.estado === "pendiente" ? "Cancelar"
-    : (f.estado === "en_curso" ? "Cerrar" : "Quitar");
-  if (!confirm(verbo + " " + f.simbolo + " " + f.tf + "?")) return;
-  let q = "api/bitacora?sacar=" + encodeURIComponent(id);
-  if (f.estado === "en_curso") {
+  const f = ((ULTIMA_BIT && ULTIMA_BIT.filas) || []).find(x => String(x.id) === String(id));
+  let q = "api/bitacora?sacar=" + encodeURIComponent(id || "");
+  if (f && f.estado === "en_curso") {
     const usd = dolaresDe(f);
     if (usd !== null && isFinite(usd)) q += "&usd=" + encodeURIComponent(String(usd));
   }
@@ -1912,27 +1929,22 @@ async function sacarTrade(id) {
     pintarBitacora(d);
   } catch (e) {
     $("#bitacoraCuerpo").insertAdjacentHTML("afterbegin",
-      `<div class="nota nRojo">no pude ${verbo.toLowerCase()}: ${esc(e.message)}</div>`);
+      `<div class="nota nRojo">no pude sacar el trade: ${esc(e.message)}</div>`);
   }
 }
 
 async function reiniciar() {
-  if (!confirm("Se borran todas las operaciones. La cuenta queda en 0."))
-    return;
   const b = $("#resetBit");
   b.disabled = true;
+  b.textContent = "borrando…";
+  dejarEnCero();
   try {
     const d = await (await fetch("api/bitacora?reset=1")).json();
-    if (d.error) throw new Error(d.error);
-    arranque = 0;
-    try { localStorage.setItem("mesa-arranque", "0"); } catch (e) {}
-    guardarDeposito(0);
-    pintarBitacora(d);
-  } catch (e) {
-    $("#bitacoraCuerpo").innerHTML =
-      `<div class="nota nRojo">no pude reiniciar: ${esc(e.message)}</div>`;
-  }
+    if (d && !d.error) pintarBitacora(d);
+  } catch (e) {}
+  dejarEnCero();
   b.disabled = false;
+  b.textContent = "reiniciar desde cero";
 }
 
 $("#casa").addEventListener("change", () => pintarSimbolos($("#casa").value));
@@ -1959,7 +1971,9 @@ $("#capital").addEventListener("change", () => {
 $("#resetBit").addEventListener("click", reiniciar);
 $("#bitacoraCuerpo").addEventListener("click", (ev) => {
   const b = ev.target.closest && ev.target.closest("button.sacar");
-  if (!b) return;
+  if (!b || b.disabled) return;
+  b.disabled = true;
+  b.textContent = "listo…";
   sacarTrade(b.getAttribute("data-id"));
 });
 cargarCapital();
