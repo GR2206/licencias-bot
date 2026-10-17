@@ -50,7 +50,7 @@ POR_DEFECTO = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
 TFS = ["5m", "15m", "30m", "1h", "4h"]
 # El numero que se ve abajo de la pagina. Si no dice este, el archivo del
 # celular es viejo. Se sube junto con zonas.VERSION.
-VERSION = 36
+VERSION = 37
 # Exness, cuenta estándar: el lote lo elige el usuario y el piso es 0.01.
 # El catálogo sigue cotizando 1 lote; el dólar de la bitácora se multiplica
 # por este lote. NinjaTrader no se parte: es 1 contrato del activo elegido.
@@ -1653,12 +1653,17 @@ function entradaUsd(f) {
   if (isFinite(noc) && noc > 0) return noc;
   const margen = Number(f.margen_usd);
   if (isFinite(margen) && margen > 0) return margen;
-  if (!esCotizado(f)) return null;
+  if (esCotizado(f)) {
+    const entrada = Number(f.entrada);
+    const tick = Number(f.tick);
+    const dolar = Number(f.dolar_tick) * tamanoDe(f);
+    if (entrada > 0 && tick > 0 && dolar > 0) return entrada / tick * dolar;
+    return null;
+  }
   const entrada = Number(f.entrada);
-  const tick = Number(f.tick);
-  const dolar = Number(f.dolar_tick) * tamanoDe(f);
-  if (!(entrada > 0) || !(tick > 0) || !(dolar > 0)) return null;
-  return entrada / tick * dolar;
+  const riesgo = Math.abs(entrada - Number(f.stop));
+  if (entrada > 0 && riesgo > 0) return R_CRIPTO_USD * entrada / riesgo;
+  return null;
 }
 
 function lineaDinero(f) {
