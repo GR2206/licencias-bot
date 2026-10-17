@@ -50,7 +50,7 @@ POR_DEFECTO = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
 TFS = ["5m", "15m", "30m", "1h", "4h"]
 # El numero que se ve abajo de la pagina. Si no dice este, el archivo del
 # celular es viejo. Se sube junto con zonas.VERSION.
-VERSION = 34
+VERSION = 35
 # Exness, cuenta estándar: el lote lo elige el usuario y el piso es 0.01.
 # El catálogo sigue cotizando 1 lote; el dólar de la bitácora se multiplica
 # por este lote. NinjaTrader no se parte: es 1 contrato del activo elegido.
@@ -1706,14 +1706,7 @@ function pintarBitacora(d) {
   if (document.activeElement !== $("#capital")) {
     $("#capital").value = String(Math.round(t.cuenta * 100) / 100);
   }
-  const liquidadas = filas.filter(f => f.estado === "liquidado");
-  let h = "";
-  if (liquidadas.length) {
-    h += `<div class="nota nRojo" style="margin-bottom:10px"><b>Cuenta liquidada.</b>
-      El precio fue tan en contra que se comió el saldo. Esas operaciones
-      quedan en pérdida y en real no seguían hasta el objetivo.</div>`;
-  }
-  h += `<div class="balance">
+  let h = `<div class="balance">
     <div class="bTop"><span>Cuenta</span>
       <span class="balNum ${cls}">${plata(t.cuenta)}</span></div>
     <div class="zDet" style="margin-top:4px">empezaste con ${plata(arranque)}
