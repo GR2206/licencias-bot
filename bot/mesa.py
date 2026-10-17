@@ -50,11 +50,16 @@ POR_DEFECTO = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
 TFS = ["5m", "15m", "30m", "1h", "4h"]
 # El numero que se ve abajo de la pagina. Si no dice este, el archivo del
 # celular es viejo. Se sube junto con zonas.VERSION.
-VERSION = 33
+VERSION = 34
 # Exness, cuenta estándar: el lote lo elige el usuario y el piso es 0.01.
 # El catálogo sigue cotizando 1 lote; el dólar de la bitácora se multiplica
 # por este lote. NinjaTrader no se parte: es 1 contrato del activo elegido.
 LOTE_EXNESS_DEF = 0.01
+# Binance: el monto es un porcentaje de la cuenta y, en futuros, se multiplica
+# por la palanca. Con 50 dólares, 10% y X10 entran 5 de margen y 50 de posición.
+PALANCA_DEF = 10
+PALANCA_MAX = 125
+MARGEN_PCT_DEF = 10.0
 
 # Cuantas velas se deja puesta la orden limite. En 15m son 6 horas. Pasado
 # eso, si el precio no toco la entrada, el trade vencio: no es una perdida,
@@ -328,6 +333,11 @@ def anotar(analisis):
     if fila["mercado"] == "exness":
         fila["lote"] = _lote_pedido(r.get("lote"))
         fila["lote_fijo"] = True
+    if fila["mercado"] in ("futuros", "spot") and r.get("nocional") is not None:
+        fila["margen_pct"] = r.get("margen_pct")
+        fila["palanca"] = r.get("palanca")
+        fila["margen_usd"] = r.get("margen_usd")
+        fila["nocional"] = r.get("nocional")
     with _candado_bit:
         filas = _cargar_bitacora()
         if any(x.get("id") == ident for x in filas):
@@ -354,6 +364,45 @@ def _lote_de_fila(fila):
     if guardado:
         return float(guardado)
     return LOTE_EXNESS_DEF
+
+
+def _palanca_pedida(texto):
+    """Palanca de Binance. Si no viene configurada, X10."""
+    try:
+        n = int(round(float(texto)))
+    except (TypeError, ValueError):
+        return PALANCA_DEF
+    return min(PALANCA_MAX, max(1, n))
+
+
+def _margen_pedido(texto):
+    """Porcentaje de la cuenta que entra de margen. Si no viene, 10%."""
+    try:
+        n = float(texto)
+    except (TypeError, ValueError):
+        return float(MARGEN_PCT_DEF)
+    if n != n:
+        return float(MARGEN_PCT_DEF)
+    return round(min(100.0, max(1.0, n)), 2)
+
+
+def _nocional_binance(cuenta, margen_pct, palanca, mercado):
+    """Margen = % de la cuenta. En futuros la posición es margen × palanca.
+
+    En spot la palanca no multiplica: entra solo ese porcentaje.
+    """
+    try:
+        base = float(cuenta)
+    except (TypeError, ValueError):
+        base = 0.0
+    if base != base or base < 0:
+        base = 0.0
+    pct = _margen_pedido(margen_pct)
+    lev = _palanca_pedida(palanca)
+    margen = round(base * pct / 100.0, 2)
+    if mercado == "spot":
+        return margen, lev, margen
+    return margen, lev, round(margen * lev, 2)
 
 
 def _normalizar_lotes(filas, lote=LOTE_EXNESS_DEF):
@@ -389,7 +438,15 @@ def _normalizar_lotes(filas, lote=LOTE_EXNESS_DEF):
 
 
 def _usd_de_precio(fila, favor_precio):
-    """Dólares de un movimiento. NinjaTrader es 1 contrato. Exness, su lote."""
+    """Dólares de un movimiento.
+
+    Binance con posición guardada cobra el movimiento del precio sobre ese
+    nocional. NinjaTrader es 1 contrato. Exness, su lote. Un cripto anotado
+    antes, sin posición, sigue en 100 dólares por cada 1 R.
+    """
+    if fila.get("nocional") is not None and fila.get("nocional") != "":
+        entrada = float(fila["entrada"]) or 1e-12
+        return favor_precio / entrada * float(fila["nocional"])
     entrada = float(fila["entrada"])
     stop = float(fila["stop"])
     riesgo = abs(entrada - stop) or 1e-12
@@ -587,7 +644,8 @@ def bitacora_csv(filas):
     buffer = io.StringIO()
     campos = ["anotado", "simbolo", "tf", "lado", "zona_tipo", "entrada",
               "stop", "objetivo", "invalida", "estado", "r", "usd",
-              "peor_usd", "lote", "detalle", "precio_al_anotar", "precio_ahora",
+              "peor_usd", "lote", "margen_pct", "palanca", "nocional",
+              "detalle", "precio_al_anotar", "precio_ahora",
               "precio_visto", "resuelto", "nacio"]
     escritor = csv.DictWriter(buffer, fieldnames=campos, extrasaction="ignore")
     escritor.writeheader()
@@ -942,6 +1000,18 @@ PAGINA = """<!DOCTYPE html>
         <option value="spot">spot (0.20% ida y vuelta)</option>
       </select>
     </div>
+    <div id="campoBinance">
+      <div class="rejilla3">
+        <div class="campo">
+          <label for="palanca">Palanca</label>
+          <input id="palanca" type="number" inputmode="numeric" value="10" min="1" max="125" step="1">
+        </div>
+        <div class="campo">
+          <label for="margen">Monto (% de la cuenta)</label>
+          <input id="margen" type="number" inputmode="decimal" value="10" min="1" max="100" step="1">
+        </div>
+      </div>
+    </div>
     <button id="calcular">CALCULAR</button>
     <button id="buscar" type="button">CALCULAR TODO</button>
     <div id="lista"></div>
@@ -996,6 +1066,7 @@ function pintarSimbolos(casaId) {
     s => `<option value="${esc(s.id)}">${esc(s.nombre)}</option>`).join("");
   const esBinance = casa.id === "binance";
   $("#campoMercado").style.display = esBinance ? "" : "none";
+  $("#campoBinance").style.display = esBinance ? "" : "none";
   $("#campoLote").style.display = casa.id === "exness" ? "" : "none";
   if (esBinance && $("#mercado").value !== "futuros" && $("#mercado").value !== "spot") {
     $("#mercado").value = "futuros";
@@ -1036,7 +1107,15 @@ async function calcular() {
     dias: $("#dias").value, rr: $("#rr").value,
     mercado: mercadoPedido(),
   });
-  if (mercadoPedido() === "exness") p.set("lote", String(loteExness()));
+  const mercado = mercadoPedido();
+  if (mercado === "exness") p.set("lote", String(loteExness()));
+  if (mercado === "futuros" || mercado === "spot") {
+    p.set("palanca", String(palancaBinance()));
+    p.set("margen", String(margenBinance()));
+    const tot = totalesDe(ULTIMA_BIT);
+    const cuenta = (isFinite(tot.cuenta) && tot.cuenta > 0) ? tot.cuenta : deposito;
+    p.set("cuenta", String(cuenta));
+  }
   try {
     const d = await (await fetch("api/calcular?" + p)).json();
     $("#salida").innerHTML = d.error
@@ -1170,6 +1249,13 @@ function pintar(d) {
       elegido. El tick más barato de la lista paga 0.50 dólares: MNQ, MYM y
       M2K. El micro de oro, MGC, paga 1 dólar por tick.</div>`;
   }
+  if (d.mercado === "futuros" || d.mercado === "spot") {
+    h += `<div class="panel nota nGris" style="margin-bottom:12px">
+      <b>Binance.</b> El monto es el porcentaje de la cuenta y la palanca es
+      la del cajón. Con 10% y X10, una cuenta de 50 dólares pone 5 de margen
+      y una posición de 50. En spot la palanca no multiplica: entra solo el
+      porcentaje. El objetivo sigue siendo el 1:R de arriba.</div>`;
+  }
   if (d.mercado === "exness") {
     h += `<div class="panel nota nGris" style="margin-bottom:12px">
       <b>Exness.</b> Forex, oro, plata y los índices. Las velas son el precio
@@ -1207,8 +1293,7 @@ function pintar(d) {
         <tr><td>precio ahora</td><td>${fijo(d.precio, dec)}
             · la entrada esta a ${r.distancia_pct}%</td></tr>
         <tr><td>riesgo</td><td>${r.riesgo_pct}% del precio · 1:${r.rr_real}${
-          r.lote ? ` · ${fmtLote(r.lote)} lotes · el stop son ${plata(r.riesgo_usd)}`
-          : (r.contratos ? ` · 1 contrato · el stop son ${plata(r.riesgo_usd)}` : "")
+          sufijoRiesgo(r, d.mercado)
         }</td></tr>
         <tr><td>la comision se lleva</td><td>${r.costo_r} R por operacion</td></tr>
         <tr><td>acierto para empatar</td><td><b>${r.acierto_empate}%</b>
@@ -1374,6 +1459,22 @@ function plataFirma(n) {
 const CAPITAL_DEF = 10000;
 const R_CRIPTO_USD = 100;
 const LOTE_EXNESS_DEF = 0.01;
+const PALANCA_DEF = 10;
+const MARGEN_DEF = 10;
+
+function sufijoRiesgo(r, mercado) {
+  if (r.lote)
+    return ` · ${fmtLote(r.lote)} lotes · el stop son ${plata(r.riesgo_usd)}`;
+  if (r.contratos)
+    return ` · 1 contrato · el stop son ${plata(r.riesgo_usd)}`;
+  if (r.nocional !== null && r.nocional !== undefined && r.nocional !== "") {
+    const pal = mercado === "spot" ? "spot sin palanca" : `palanca X${r.palanca}`;
+    const stop = isFinite(Number(r.riesgo_usd))
+      ? ` · el stop son ${plata(Number(r.riesgo_usd))}` : "";
+    return ` · ${fmtMov(Number(r.margen_pct))}% de la cuenta · ${pal} · posición ${plata(Number(r.nocional))}${stop}`;
+  }
+  return "";
+}
 
 function loteExness() {
   const n = Number($("#lote").value);
@@ -1393,6 +1494,40 @@ function guardarLote() {
   const n = loteExness();
   $("#lote").value = String(n);
   try { localStorage.setItem("mesa-lote", String(n)); } catch (e) {}
+}
+
+function palancaBinance() {
+  const n = Math.round(Number($("#palanca").value));
+  if (!isFinite(n) || n < 1) return PALANCA_DEF;
+  return Math.min(125, n);
+}
+
+function margenBinance() {
+  const n = Number($("#margen").value);
+  if (!isFinite(n) || n < 1) return MARGEN_DEF;
+  return Math.min(100, Math.round(n * 100) / 100);
+}
+
+function cargarBinance() {
+  try {
+    const p = localStorage.getItem("mesa-palanca");
+    const m = localStorage.getItem("mesa-margen");
+    if (p !== null && Number(p) >= 1)
+      $("#palanca").value = String(Math.min(125, Math.round(Number(p))));
+    if (m !== null && Number(m) >= 1)
+      $("#margen").value = String(Math.min(100, Number(m)));
+  } catch (e) {}
+}
+
+function guardarBinance() {
+  const p = palancaBinance();
+  const m = margenBinance();
+  $("#palanca").value = String(p);
+  $("#margen").value = String(m);
+  try {
+    localStorage.setItem("mesa-palanca", String(p));
+    localStorage.setItem("mesa-margen", String(m));
+  } catch (e) {}
 }
 
 function tamanoDe(f) {
@@ -1446,6 +1581,8 @@ function dolaresDe(f) {
   }
   if (esCotizado(f))
     return (favor / Number(f.tick)) * Number(f.dolar_tick) * tamanoDe(f);
+  if (Number(f.nocional) > 0 && entrada)
+    return (favor / entrada) * Number(f.nocional);
   return (favor / riesgo) * R_CRIPTO_USD;
 }
 
@@ -1490,7 +1627,9 @@ function marcaPrecio(f, dec) {
     const usd = Number(f.usd);
     favor = esCotizado(f)
       ? usd * Number(f.tick) / (Number(f.dolar_tick) * tamanoDe(f))
-      : usd / R_CRIPTO_USD * riesgo;
+      : (Number(f.nocional) > 0
+         ? usd / Number(f.nocional) * entrada
+         : usd / R_CRIPTO_USD * riesgo);
   } else if (esCotizado(f) && f.r !== null && f.r !== undefined && f.r !== "") {
     favor = Number(f.r) * riesgo;
   } else if (hayPrecio) {
@@ -1516,6 +1655,13 @@ function lineaTamano(f) {
   }
   if (f.mercado === "ninjatrader")
     return `<div class="zDet">NinjaTrader 1 contrato</div>`;
+  if ((f.mercado === "futuros" || f.mercado === "spot") && f.nocional !== null
+      && f.nocional !== undefined && f.nocional !== "" && Number(f.nocional) >= 0) {
+    const pal = f.mercado === "spot" ? "spot sin palanca" : `palanca X${f.palanca || PALANCA_DEF}`;
+    const pct = (f.margen_pct !== null && f.margen_pct !== undefined && f.margen_pct !== "")
+      ? `${fmtMov(Number(f.margen_pct))}% · ` : "";
+    return `<div class="zDet">Binance ${pct}${pal} · posición ${plata(Number(f.nocional))}</div>`;
+  }
   return "";
 }
 
@@ -1573,7 +1719,7 @@ function pintarBitacora(d) {
     <div class="zDet" style="margin-top:4px">empezaste con ${plata(arranque)}
       · ganado ${plataFirma(t.ganado)} · perdido ${plataFirma(t.perdido)}
       · abierto ${plataFirma(t.flotante)}</div>
-    <div class="zDet">NinjaTrader a 1 contrato · Exness al lote de cada trade (mínimo 0.01) · cripto, 1 R = ${plata(R_CRIPTO_USD)}
+    <div class="zDet">NinjaTrader a 1 contrato · Exness al lote de cada trade (mínimo 0.01) · Binance con el % y la palanca de cada trade · un cripto sin posición guardada, 1 R = ${plata(R_CRIPTO_USD)}
       · ${abiertos.length} en curso · ${cerrados.length} cerrados</div>
   </div>`;
   if (!filas.length) {
@@ -1633,6 +1779,8 @@ async function reiniciar() {
 
 $("#casa").addEventListener("change", () => pintarSimbolos($("#casa").value));
 $("#lote").addEventListener("change", guardarLote);
+$("#palanca").addEventListener("change", guardarBinance);
+$("#margen").addEventListener("change", guardarBinance);
 $("#calcular").addEventListener("click", calcular);
 $("#buscar").addEventListener("click", buscar);
 $("#actualizarBit").addEventListener("click", () => cargarBitacora(true));
@@ -1653,6 +1801,7 @@ $("#capital").addEventListener("change", () => {
 $("#resetBit").addEventListener("click", reiniciar);
 cargarCapital();
 cargarLote();
+cargarBinance();
 inicio();
 cargarBitacora(false);
 </script></body></html>
@@ -1757,16 +1906,31 @@ def atender(path):
                 if ruta == "/api/calcular":
                     salida = calcular(simbolo, tf, dias, rr, mercado,
                                       Manejador.costo_max_r)
-                    if mercado == "exness":
-                        rec = salida.get("recomendacion")
-                        if rec:
-                            lote_n = _lote_pedido(uno("lote", "0.01"))
-                            rec["lote"] = lote_n
-                            contrato = zonas.EXNESS.get(simbolo) or {}
-                            if contrato.get("tick") and contrato.get("dolar") is not None:
-                                dist = abs(float(rec["entrada"]) - float(rec["stop"]))
-                                rec["riesgo_usd"] = round(
-                                    dist / contrato["tick"] * contrato["dolar"] * lote_n, 2)
+                    rec = salida.get("recomendacion")
+                    if mercado == "exness" and rec:
+                        lote_n = _lote_pedido(uno("lote", "0.01"))
+                        rec["lote"] = lote_n
+                        contrato = zonas.EXNESS.get(simbolo) or {}
+                        if contrato.get("tick") and contrato.get("dolar") is not None:
+                            dist = abs(float(rec["entrada"]) - float(rec["stop"]))
+                            rec["riesgo_usd"] = round(
+                                dist / contrato["tick"] * contrato["dolar"] * lote_n, 2)
+                    if mercado in ("futuros", "spot") and rec:
+                        palanca = _palanca_pedida(uno("palanca", str(PALANCA_DEF)))
+                        margen_pct = _margen_pedido(uno("margen", str(MARGEN_PCT_DEF)))
+                        try:
+                            cuenta = float(uno("cuenta", "0"))
+                        except ValueError:
+                            cuenta = 0.0
+                        margen_usd, palanca, nocional = _nocional_binance(
+                            cuenta, margen_pct, palanca, mercado)
+                        rec["palanca"] = palanca
+                        rec["margen_pct"] = margen_pct
+                        rec["margen_usd"] = margen_usd
+                        rec["nocional"] = nocional
+                        entrada = float(rec["entrada"]) or 1e-12
+                        dist = abs(entrada - float(rec["stop"]))
+                        rec["riesgo_usd"] = round(dist / entrada * nocional, 2)
                     anotar(salida)
                     return json_respuesta(salida)
                 return json_respuesta(mirar(
