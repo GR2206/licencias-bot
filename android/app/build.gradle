@@ -10,8 +10,8 @@ android {
         applicationId "bot.mesa"
         minSdk 24
         targetSdk 34
-        versionCode 35
-        versionName "35"
+        versionCode 36
+        versionName "36"
     }
 
     buildTypes {

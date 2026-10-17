@@ -50,7 +50,7 @@ POR_DEFECTO = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
 TFS = ["5m", "15m", "30m", "1h", "4h"]
 # El numero que se ve abajo de la pagina. Si no dice este, el archivo del
 # celular es viejo. Se sube junto con zonas.VERSION.
-VERSION = 35
+VERSION = 36
 # Exness, cuenta estándar: el lote lo elige el usuario y el piso es 0.01.
 # El catálogo sigue cotizando 1 lote; el dólar de la bitácora se multiplica
 # por este lote. NinjaTrader no se parte: es 1 contrato del activo elegido.
@@ -839,8 +839,9 @@ PAGINA = """<!DOCTYPE html>
   select, input { width:100%; background:#0d1117; color:var(--texto);
           border:1px solid var(--borde); border-radius:8px; padding:11px 10px;
           font-size:16px; font-family:inherit; }
-  .rejilla { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  .rejilla { display:grid; grid-template-columns:1fr 1fr; gap:10px; align-items:end; }
   .rejilla3 { display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; }
+  #campoBinance label { white-space:nowrap; }
   .campo { margin-bottom:12px; }
   #calcular { width:100%; margin-top:2px; background:var(--azul); color:#04121f;
           border:0; border-radius:10px; padding:15px; font-size:16px;
@@ -1001,13 +1002,13 @@ PAGINA = """<!DOCTYPE html>
       </select>
     </div>
     <div id="campoBinance">
-      <div class="rejilla3">
+      <div class="rejilla">
         <div class="campo">
           <label for="palanca">Palanca</label>
           <input id="palanca" type="number" inputmode="numeric" value="10" min="1" max="125" step="1">
         </div>
         <div class="campo">
-          <label for="margen">Monto (% de la cuenta)</label>
+          <label for="margen">% de la cuenta</label>
           <input id="margen" type="number" inputmode="decimal" value="10" min="1" max="100" step="1">
         </div>
       </div>
@@ -1647,6 +1648,33 @@ function marcaPrecio(f, dec) {
   return `<div class="marca ${cls}">${encabezado}${medio}${conHora ? visto : ""}</div>`;
 }
 
+function entradaUsd(f) {
+  const noc = Number(f.nocional);
+  if (isFinite(noc) && noc > 0) return noc;
+  const margen = Number(f.margen_usd);
+  if (isFinite(margen) && margen > 0) return margen;
+  if (!esCotizado(f)) return null;
+  const entrada = Number(f.entrada);
+  const tick = Number(f.tick);
+  const dolar = Number(f.dolar_tick) * tamanoDe(f);
+  if (!(entrada > 0) || !(tick > 0) || !(dolar > 0)) return null;
+  return entrada / tick * dolar;
+}
+
+function lineaDinero(f) {
+  if (f.estado !== "en_curso" && f.estado !== "pendiente") return "";
+  const entro = entradaUsd(f);
+  const lleva = f.estado === "en_curso" ? dolaresDe(f) : null;
+  const partes = [];
+  if (entro !== null && isFinite(entro)) partes.push(`entró con ${plata(entro)}`);
+  if (lleva !== null && isFinite(lleva)) {
+    const cls = lleva > 0 ? "ladoL" : (lleva < 0 ? "ladoS" : "");
+    partes.push(`lleva <span class="${cls}">${plataFirma(lleva)}</span>`);
+  }
+  if (!partes.length) return "";
+  return `<div class="zDet">${partes.join(" · ")}</div>`;
+}
+
 function lineaTamano(f) {
   if (f.mercado === "exness" && Number(f.lote) > 0) {
     const riesgo = Math.abs(Number(f.entrada) - Number(f.stop));
@@ -1675,6 +1703,7 @@ function tarjetaTrade(f) {
     <div class="zDet">entrada ${fijo(f.entrada, dec)} · SL ${fijo(f.stop, dec)}
       · TP ${fijo(f.objetivo, dec)} · invalida ${fijo(f.invalida, dec)}</div>
     ${lineaTamano(f)}
+    ${lineaDinero(f)}
     <div class="zDet">anotado ${esc(f.anotado)} UTC${cuando}</div>
     ${marcaPrecio(f, dec)}
     <div style="margin-top:4px">${esc(f.detalle || "")}</div>
