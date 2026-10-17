@@ -50,7 +50,7 @@ POR_DEFECTO = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
 TFS = ["5m", "15m", "30m", "1h", "4h"]
 # El numero que se ve abajo de la pagina. Si no dice este, el archivo del
 # celular es viejo. Se sube junto con zonas.VERSION.
-VERSION = 38
+VERSION = 39
 # Exness, cuenta estándar: el lote lo elige el usuario y el piso es 0.01.
 # El catálogo sigue cotizando 1 lote; el dólar de la bitácora se multiplica
 # por este lote. NinjaTrader no se parte: es 1 contrato del activo elegido.
@@ -688,6 +688,47 @@ def actualizar_bitacora(cuenta=None, lote=LOTE_EXNESS_DEF):
         return _vista(filas)
 
 
+def _cerrar_a_mano(fila, usd_texto):
+    """Cierra una abierta al resultado que se ve, y lo deja realizado."""
+    try:
+        usd = float(usd_texto) if usd_texto not in (None, "") else None
+    except (TypeError, ValueError):
+        usd = None
+    if usd is None and fila.get("precio_ahora") not in (None, ""):
+        entrada = float(fila["entrada"])
+        px = float(fila["precio_ahora"])
+        favor = (entrada - px) if fila.get("lado") == "SHORT" else (px - entrada)
+        usd = _usd_de_precio(fila, favor)
+    if usd is None:
+        usd = 0.0
+    riesgo = abs(float(fila["entrada"]) - float(fila["stop"])) or 1e-12
+    probe = _usd_de_precio(fila, 1.0)
+    favor = (usd / probe) if probe else 0.0
+    ahora = int(time.time() * 1000)
+    fila["estado"] = "cerrado"
+    fila["usd"] = round(float(usd), 2)
+    fila["r"] = round(favor / riesgo, 3)
+    fila["resuelto_ms"] = ahora
+    fila["resuelto"] = _cuando(ahora)
+    fila["detalle"] = "cerrado a mano"
+
+
+def sacar_fila(ident, usd_texto=""):
+    """Cancela una pendiente, cierra una abierta o quita una ya terminada."""
+    with _candado_bit:
+        filas = _cargar_bitacora()
+        salida = []
+        for f in filas:
+            if str(f.get("id")) != str(ident):
+                salida.append(f)
+                continue
+            if f.get("estado") == "en_curso":
+                _cerrar_a_mano(f, usd_texto)
+                salida.append(f)
+        _guardar_bitacora(salida)
+        return _vista(salida)
+
+
 def bitacora_csv(filas):
     buffer = io.StringIO()
     campos = ["anotado", "simbolo", "tf", "lado", "zona_tipo", "entrada",
@@ -982,6 +1023,10 @@ PAGINA = """<!DOCTYPE html>
   .balNum { font-weight:700; font-variant-numeric:tabular-nums; font-size:18px; }
   .balNum.aFavor { color:var(--verde); }
   .balNum.enContra { color:var(--rojo); }
+  button.sacar { margin-top:8px; width:100%; background:transparent; color:var(--suave);
+          border:1px solid var(--borde); border-radius:8px; padding:8px 10px;
+          font-size:13px; font-family:inherit; cursor:pointer; }
+  button.sacar:active { color:var(--texto); }
   details.cerrados { margin-top:8px; }
   details.cerrados > summary { color:var(--texto); background:#21262d;
              border:1px solid var(--borde); border-radius:8px; padding:12px;
@@ -1070,13 +1115,13 @@ PAGINA = """<!DOCTYPE html>
     <h3 style="margin-top:0">Bitácora</h3>
     <div class="campo">
       <label for="capital">Cuenta</label>
-      <input id="capital" type="number" inputmode="decimal" value="10000" min="0" step="100">
+      <input id="capital" type="number" inputmode="decimal" value="10000" min="0" step="1">
     </div>
     <div id="bitacoraCuerpo" class="estado">cargando…</div>
     <div class="filaBotones">
       <button id="actualizarBit" type="button">actualizar resultados</button>
       <a id="bajarCsv" href="api/bitacora.csv">descargar CSV</a>
-      <button id="resetBit" class="ancho" type="button">reiniciar operaciones</button>
+      <button id="resetBit" class="ancho" type="button">reiniciar desde cero</button>
     </div>
   </div>
   <div class="pie" style="text-align:center">versión __VERSION__</div>
@@ -1491,7 +1536,7 @@ function copiar() {
 
 const PILLS = {pendiente:"pendiente", en_curso:"abierta", tp:"TP",
                sl:"SL", liquidado:"liquidada", invalidado:"invalidada",
-               agotado:"agotada", vencido:"vencio"};
+               agotado:"agotada", vencido:"vencio", cerrado:"cerrada"};
 
 function plata(n) {
   if (!isFinite(n)) return "";
@@ -1771,6 +1816,9 @@ function tarjetaTrade(f) {
     ${marcaPrecio(f, dec)}
     <div style="margin-top:4px">${esc(f.detalle || "")}</div>
     ${f.peor_usd ? `<div class="zDet">en contra llegó a ${plata(-Math.abs(Number(f.peor_usd)))}</div>` : ""}
+    <button type="button" class="sacar" data-id="${esc(f.id)}">${
+      f.estado === "pendiente" ? "cancelar" : (f.estado === "en_curso" ? "cerrar" : "quitar")
+    }</button>
   </div>`;
 }
 
@@ -1845,15 +1893,38 @@ async function cargarBitacora(actualizar) {
   }
 }
 
+async function sacarTrade(id) {
+  const f = ((ULTIMA_BIT && ULTIMA_BIT.filas) || []).find(x => x.id === id);
+  if (!f) return;
+  const verbo = f.estado === "pendiente" ? "Cancelar"
+    : (f.estado === "en_curso" ? "Cerrar" : "Quitar");
+  if (!confirm(verbo + " " + f.simbolo + " " + f.tf + "?")) return;
+  let q = "api/bitacora?sacar=" + encodeURIComponent(id);
+  if (f.estado === "en_curso") {
+    const usd = dolaresDe(f);
+    if (usd !== null && isFinite(usd)) q += "&usd=" + encodeURIComponent(String(usd));
+  }
+  try {
+    const d = await (await fetch(q)).json();
+    if (d.error) throw new Error(d.error);
+    pintarBitacora(d);
+  } catch (e) {
+    $("#bitacoraCuerpo").insertAdjacentHTML("afterbegin",
+      `<div class="nota nRojo">no pude ${verbo.toLowerCase()}: ${esc(e.message)}</div>`);
+  }
+}
+
 async function reiniciar() {
-  if (!confirm("Se borran todas las operaciones. La cuenta vuelve a " + plata(arranque) + "."))
+  if (!confirm("Se borran todas las operaciones. La cuenta queda en 0."))
     return;
-  guardarDeposito(arranque);
   const b = $("#resetBit");
   b.disabled = true;
   try {
     const d = await (await fetch("api/bitacora?reset=1")).json();
     if (d.error) throw new Error(d.error);
+    arranque = 0;
+    try { localStorage.setItem("mesa-arranque", "0"); } catch (e) {}
+    guardarDeposito(0);
     pintarBitacora(d);
   } catch (e) {
     $("#bitacoraCuerpo").innerHTML =
@@ -1884,6 +1955,11 @@ $("#capital").addEventListener("change", () => {
   if (ULTIMA_BIT) pintarBitacora(ULTIMA_BIT);
 });
 $("#resetBit").addEventListener("click", reiniciar);
+$("#bitacoraCuerpo").addEventListener("click", (ev) => {
+  const b = ev.target.closest && ev.target.closest("button.sacar");
+  if (!b) return;
+  sacarTrade(b.getAttribute("data-id"));
+});
 cargarCapital();
 cargarLote();
 cargarBinance();
@@ -2023,6 +2099,8 @@ def atender(path):
             except RuntimeError as e:
                 return json_respuesta({"error": str(e)}, 502)
         if ruta == "/api/bitacora":
+            if uno("sacar"):
+                return json_respuesta(sacar_fila(uno("sacar"), uno("usd")))
             if uno("reset") == "1":
                 with _candado_bit:
                     _guardar_bitacora([])
