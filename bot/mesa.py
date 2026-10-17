@@ -1815,6 +1815,8 @@ function tarjetaTrade(f) {
     <div class="zDet">anotado ${esc(f.anotado)} UTC${cuando}</div>
     ${marcaPrecio(f, dec)}
     <div style="margin-top:4px">${esc(f.detalle || "")}</div>
+    ${f.estado === "cerrado" && f.usd !== null && f.usd !== undefined && f.usd !== ""
+      ? `<div class="marca ${Number(f.usd) > 0 ? "aFavor" : (Number(f.usd) < 0 ? "enContra" : "")}">cerró en ${plataFirma(Number(f.usd))}</div>` : ""}
     ${f.peor_usd ? `<div class="zDet">en contra llegó a ${plata(-Math.abs(Number(f.peor_usd)))}</div>` : ""}
     <button type="button" class="sacar" data-id="${esc(f.id)}">${
       f.estado === "pendiente" ? "cancelar" : (f.estado === "en_curso" ? "cerrar" : "quitar")
