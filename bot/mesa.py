@@ -50,14 +50,14 @@ POR_DEFECTO = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
 TFS = ["5m", "15m", "30m", "1h", "4h"]
 # El numero que se ve abajo de la pagina. Si no dice este, el archivo del
 # celular es viejo. Se sube junto con zonas.VERSION.
-VERSION = 40
+VERSION = 41
 # Exness, cuenta estándar: el lote lo elige el usuario y el piso es 0.01.
 # El catálogo sigue cotizando 1 lote; el dólar de la bitácora se multiplica
 # por este lote. NinjaTrader no se parte: es 1 contrato del activo elegido.
 LOTE_EXNESS_DEF = 0.01
-# Binance: el monto que entra es el porcentaje de la cuenta. La palanca queda
-# anotada y no multiplica los dólares. Con 50 dólares y 10%, entran 5. Si el
-# precio se mueve 10%, lleva 0.50.
+# Binance: el monto que entra es el porcentaje de la cuenta, sin palanca.
+# La ganancia sí se multiplica. Con 5 dólares y X10, un 3% de precio se
+# muestra como 30% y son 1.50 dólares. En spot la palanca es 1.
 PALANCA_DEF = 10
 PALANCA_MAX = 125
 MARGEN_PCT_DEF = 10.0
@@ -391,8 +391,8 @@ def _margen_pedido(texto):
 def _nocional_binance(cuenta, margen_pct, palanca, mercado):
     """El dinero que entra es el porcentaje de la cuenta.
 
-    La palanca se guarda para mostrarla. No multiplica el margen ni la
-    ganancia: 5 dólares y un 10% de movimiento son 0.50.
+    Ese margen se guarda tal cual. La palanca multiplica la ganancia más
+    adelante, no el monto que se muestra como inversión.
     """
     try:
         base = float(cuenta)
@@ -440,16 +440,32 @@ def _margen_de_fila(fila):
     return noc
 
 
+def _palanca_de_fila(fila):
+    """Factor de la ganancia. En spot y en una fila sin palanca es 1.
+
+    No inventa X10 para un cripto viejo que no guardó la palanca.
+    """
+    if fila.get("mercado") != "futuros":
+        return 1.0
+    pal = fila.get("palanca")
+    try:
+        pal = float(pal) if pal not in (None, "") else 0.0
+    except (TypeError, ValueError):
+        return 1.0
+    if pal != pal or pal < 1:
+        return 1.0
+    return pal
+
+
 def _ajustar_peor_al_margen(fila):
-    """El peor precio se pasa a dólares del margen, no de la palanca."""
-    margen = _margen_de_fila(fila)
-    if margen is None or fila.get("peor_precio") is None:
+    """El peor precio se pasa a dólares, con la palanca de futuros."""
+    if _margen_de_fila(fila) is None or fila.get("peor_precio") is None:
         return
     entrada = float(fila["entrada"]) or 1e-12
     peor = float(fila["peor_precio"])
     contra = ((entrada - peor) if fila.get("lado") == "LONG" else (peor - entrada))
     if contra > 0:
-        fila["peor_usd"] = round(contra / entrada * margen, 2)
+        fila["peor_usd"] = round(_usd_de_precio(fila, contra), 2)
 
 
 def _normalizar_lotes(filas, lote=LOTE_EXNESS_DEF):
@@ -487,14 +503,15 @@ def _normalizar_lotes(filas, lote=LOTE_EXNESS_DEF):
 def _usd_de_precio(fila, favor_precio):
     """Dólares de un movimiento.
 
-    Binance cobra el movimiento del precio sobre el margen. La palanca no
-    multiplica. NinjaTrader es 1 contrato. Exness, su lote. Un cripto anotado
-    antes, sin margen, sigue en 100 dólares por cada 1 R.
+    En futuros de Binance el porcentaje del precio se multiplica por la
+    palanca y se aplica al margen. En spot la palanca es 1. NinjaTrader es
+    1 contrato. Exness, su lote. Un cripto anotado antes, sin margen, sigue
+    en 100 dólares por cada 1 R.
     """
     margen = _margen_de_fila(fila)
     if margen is not None:
         entrada = float(fila["entrada"]) or 1e-12
-        return favor_precio / entrada * margen
+        return favor_precio / entrada * margen * _palanca_de_fila(fila)
     entrada = float(fila["entrada"])
     stop = float(fila["stop"])
     riesgo = abs(entrada - stop) or 1e-12
@@ -1345,10 +1362,11 @@ function pintar(d) {
   }
   if (d.mercado === "futuros" || d.mercado === "spot") {
     h += `<div class="panel nota nGris" style="margin-bottom:12px">
-      <b>Binance.</b> Entra el porcentaje de la cuenta. Con 10% y una cuenta de
-      50 dólares, el margen es 5. Si el precio se mueve 10%, lleva 0.50
-      dólares. La palanca queda anotada y no multiplica esa ganancia. El
-      objetivo sigue siendo el 1:R de arriba.</div>`;
+      <b>Binance.</b> El monto que entra es el porcentaje de la cuenta, sin
+      palanca. Con 10% y una cuenta de 50 dólares, el margen es 5. La ganancia
+      sí se multiplica: un movimiento del 3% con palanca X10 se muestra como
+      30%, y sobre esos 5 dólares son 1.50. En spot la palanca no multiplica.
+      El objetivo sigue siendo el 1:R de arriba.</div>`;
   }
   if (d.mercado === "exness") {
     h += `<div class="panel nota nGris" style="margin-bottom:12px">
@@ -1677,7 +1695,7 @@ function dolaresDe(f) {
     return (favor / Number(f.tick)) * Number(f.dolar_tick) * tamanoDe(f);
   const margen = margenDe(f);
   if (margen !== null && entrada)
-    return (favor / entrada) * margen;
+    return (favor / entrada) * margen * palancaDe(f);
   return (favor / riesgo) * R_CRIPTO_USD;
 }
 
@@ -1721,10 +1739,11 @@ function marcaPrecio(f, dec) {
   } else if (f.usd !== null && f.usd !== undefined && f.usd !== "") {
     const usd = Number(f.usd);
     const margen = margenDe(f);
+    const pal = palancaDe(f);
     favor = esCotizado(f)
       ? usd * Number(f.tick) / (Number(f.dolar_tick) * tamanoDe(f))
       : (margen !== null
-         ? usd / (margen || 1e-12) * entrada
+         ? usd / ((margen || 1e-12) * pal) * entrada
          : usd / R_CRIPTO_USD * riesgo);
   } else if (esCotizado(f) && f.r !== null && f.r !== undefined && f.r !== "") {
     favor = Number(f.r) * riesgo;
@@ -1737,10 +1756,18 @@ function marcaPrecio(f, dec) {
   const signo = favor > 0 ? "+" : "";
   const erres = `${signo}${(favor / riesgo).toFixed(2)} R`;
   const futuro = esCotizado(f);
+  const pct = entrada ? favor / entrada * 100 * (futuro ? 1 : palancaDe(f)) : 0;
   const medio = futuro
     ? `${lineaFuturo(favor, f)} · ${erres}`
-    : `${signo}${(entrada ? favor / entrada * 100 : 0).toFixed(2)}% · ${erres}`;
+    : `${signo}${pct.toFixed(2)}% · ${erres}`;
   return `<div class="marca ${cls}">${encabezado}${medio}${conHora ? visto : ""}</div>`;
+}
+
+function palancaDe(f) {
+  if (f.mercado !== "futuros") return 1;
+  const lev = Number(f.palanca);
+  if (!isFinite(lev) || lev < 1) return 1;
+  return lev;
 }
 
 function margenDe(f) {
@@ -1777,7 +1804,13 @@ function lineaDinero(f) {
   if (entro !== null && isFinite(entro)) partes.push(`entró con ${plata(entro)}`);
   if (lleva !== null && isFinite(lleva)) {
     const cls = lleva > 0 ? "ladoL" : (lleva < 0 ? "ladoS" : "");
-    partes.push(`lleva <span class="${cls}">${plataFirma(lleva)}</span>`);
+    let extra = "";
+    const margen = margenDe(f);
+    if (margen) {
+      const pct = lleva / margen * 100;
+      extra = ` · ${pct > 0 ? "+" : ""}${pct.toFixed(2)}%`;
+    }
+    partes.push(`lleva <span class="${cls}">${plataFirma(lleva)}${extra}</span>`);
   }
   if (!partes.length) return "";
   return `<div class="zDet">${partes.join(" · ")}</div>`;
@@ -1793,7 +1826,7 @@ function lineaTamano(f) {
     return `<div class="zDet">NinjaTrader 1 contrato</div>`;
   const margen = margenDe(f);
   if (margen !== null) {
-    const pal = f.mercado === "spot" ? "spot sin palanca" : `palanca X${f.palanca || PALANCA_DEF}`;
+    const pal = f.mercado === "spot" ? "spot sin palanca" : `palanca X${palancaDe(f)}`;
     const pct = (f.margen_pct !== null && f.margen_pct !== undefined && f.margen_pct !== "")
       ? `${fmtMov(Number(f.margen_pct))}% · ` : "";
     return `<div class="zDet">Binance ${pct}${pal} · margen ${plata(margen)}</div>`;
@@ -1854,7 +1887,7 @@ function pintarBitacora(d) {
     <div class="zDet" style="margin-top:4px">empezaste con ${plata(arranque)}
       · ganado ${plataFirma(t.ganado)} · perdido ${plataFirma(t.perdido)}
       · abierto ${plataFirma(t.flotante)}</div>
-    <div class="zDet">NinjaTrader a 1 contrato · Exness al lote de cada trade (mínimo 0.01) · Binance entra con el margen · la palanca no multiplica los dólares · un cripto sin margen guardado, 1 R = ${plata(R_CRIPTO_USD)}
+    <div class="zDet">NinjaTrader a 1 contrato · Exness al lote de cada trade (mínimo 0.01) · Binance entra con el margen · en futuros la ganancia se multiplica por la palanca · un cripto sin margen guardado, 1 R = ${plata(R_CRIPTO_USD)}
       · ${abiertos.length} en curso · ${cerrados.length} cerrados</div>
   </div>`;
   if (!filas.length) {
@@ -2107,7 +2140,9 @@ def atender(path):
                         rec["nocional"] = nocional
                         entrada = float(rec["entrada"]) or 1e-12
                         dist = abs(entrada - float(rec["stop"]))
-                        rec["riesgo_usd"] = round(dist / entrada * margen_usd, 2)
+                        factor = float(palanca) if mercado == "futuros" else 1.0
+                        rec["riesgo_usd"] = round(
+                            dist / entrada * margen_usd * factor, 2)
                     anotar(salida)
                     return json_respuesta(salida)
                 return json_respuesta(mirar(
